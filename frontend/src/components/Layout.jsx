@@ -1,6 +1,7 @@
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
+  Star,
   Package,
   Boxes,
   ShoppingCart,
@@ -23,6 +24,7 @@ const menuItems = [
   { name: 'Customers', path: '/customers', icon: Users },
   { name: 'Deliveries', path: '/deliveries', icon: Truck },
   { name: 'Returns', path: '/returns', icon: RotateCcw },
+  { name: 'Reviews', path: '/reviews', icon: Star },
   { name: 'Reports', path: '/reports', icon: BarChart3 },
   { name: 'Notifications', path: '/notifications', icon: Bell },
 ];

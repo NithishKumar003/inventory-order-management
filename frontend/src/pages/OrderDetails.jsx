@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -250,6 +249,15 @@ export default function OrderDetails() {
   const [returnMessage, setReturnMessage] = useState('');
   const [returnError, setReturnError] = useState('');
 
+  // Review states
+  const [reviews, setReviews] = useState([]);
+  const [reviewItem, setReviewItem] = useState(null);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewTitle, setReviewTitle] = useState('');
+  const [reviewComment, setReviewComment] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState('');
+  const [reviewError, setReviewError] = useState('');
   
   async function loadOrder() {
     setLoading(true);
@@ -303,6 +311,21 @@ export default function OrderDetails() {
         console.error('Return history error:', returnErr);
         setReturns([]);
       }
+
+      // Load customer's existing reviews.
+      try {
+        const reviewsResponse = await api.get('/reviews/me');
+
+        setReviews(
+          Array.isArray(reviewsResponse.data)
+            ? reviewsResponse.data
+            : []
+        );
+      } catch (reviewErr) {
+        console.error('Review history error:', reviewErr);
+        setReviews([]);
+      }
+
     } catch (err) {
       console.error('Order details error:', err);
 
@@ -415,6 +438,63 @@ export default function OrderDetails() {
       );
     } finally {
       setSubmittingReturn(false);
+    }
+  }
+
+  function openReviewModal(item) {
+    setReviewItem(item);
+    setReviewRating(5);
+    setReviewTitle('');
+    setReviewComment('');
+    setReviewMessage('');
+    setReviewError('');
+  }
+
+  function closeReviewModal() {
+    if (submittingReview) return;
+
+    setReviewItem(null);
+    setReviewError('');
+  }
+
+  async function submitReview(event) {
+    event.preventDefault();
+
+    if (!reviewItem) return;
+
+    setSubmittingReview(true);
+    setReviewError('');
+
+    try {
+      await api.post('/reviews', {
+        product_id: Number(reviewItem.product_id),
+        order_id: Number(order.id),
+        rating: Number(reviewRating),
+        title: reviewTitle.trim() || null,
+        comment: reviewComment.trim() || null,
+      });
+
+      setReviewMessage(
+        'Your review was submitted successfully and is awaiting admin approval.'
+      );
+
+      setReviewItem(null);
+
+      const reviewsResponse = await api.get('/reviews/me');
+      setReviews(
+        Array.isArray(reviewsResponse.data)
+          ? reviewsResponse.data
+          : []
+      );
+    } catch (err) {
+      console.error('Review submission error:', err);
+
+      setReviewError(
+        err.response?.data?.detail ||
+          'Unable to submit your review. Please try again.'
+      );
+    } finally {
+      setSubmittingReview(false);
     }
   }
 
@@ -566,6 +646,11 @@ export default function OrderDetails() {
                   const remainingQuantity =
                     getRemainingReturnQuantity(item);
 
+                  const existingReview = reviews.find(
+                    (review) =>
+                      Number(review.product_id) === Number(item.product_id)
+                  );
+
                   return (
                     <div
                       key={item.id}
@@ -603,6 +688,38 @@ export default function OrderDetails() {
                           {formatCurrency(item.line_subtotal)}
                         </p>
                       </div>
+
+                      {/* Product review */}
+                      {orderDelivered &&
+                        Number(item.quantity) > Number(item.cancelled_quantity || 0) && (
+                          <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                            {existingReview ? (
+                              <div>
+                                <p className="font-semibold text-slate-800">
+                                  Your Review
+                                </p>
+                                <p className="mt-1 text-sm text-slate-600">
+                                  Rating: {'⭐'.repeat(existingReview.rating)}
+                                </p>
+                                <p className="mt-1 text-xs font-semibold text-blue-700">
+                                  Status: {existingReview.status}
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <p className="text-sm font-medium text-slate-700">
+                                  How was this product?
+                                </p>
+                                <button
+                                  onClick={() => openReviewModal(item)}
+                                  className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                                >
+                                  Write a Review
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                       {/* Return button */}
                       {orderDelivered && remainingQuantity > 0 && (
@@ -974,6 +1091,119 @@ export default function OrderDetails() {
                 >
                   <RotateCcw size={16} />
                   {submittingReturn ? 'Submitting...' : 'Submit Return'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Review modal */}
+      {reviewItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">
+                  Write a Review
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {reviewItem.product_name}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeReviewModal}
+                disabled={submittingReview}
+                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+              >
+                <X size={21} />
+              </button>
+            </div>
+
+            <form onSubmit={submitReview} className="mt-6 space-y-5">
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Rating
+                </label>
+
+                <select
+                  value={reviewRating}
+                  onChange={(event) =>
+                    setReviewRating(Number(event.target.value))
+                  }
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3"
+                >
+                  {[5, 4, 3, 2, 1].map((rating) => (
+                    <option key={rating} value={rating}>
+                      {rating} Star{rating > 1 ? 's' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Review Title (Optional)
+                </label>
+
+                <input
+                  type="text"
+                  value={reviewTitle}
+                  onChange={(event) => setReviewTitle(event.target.value)}
+                  minLength={3}
+                  maxLength={120}
+                  placeholder="Summarize your experience"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Your Review (Optional)
+                </label>
+
+                <textarea
+                  value={reviewComment}
+                  onChange={(event) => setReviewComment(event.target.value)}
+                  minLength={5}
+                  maxLength={2000}
+                  rows={4}
+                  placeholder="Share your experience with this product..."
+                  className="w-full resize-none rounded-xl border border-slate-300 px-4 py-3"
+                />
+              </div>
+
+              {reviewError && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                >
+                  {reviewError}
+                </div>
+              )}
+
+              <p className="text-xs text-slate-500">
+                Your review will be visible publicly after admin approval.
+              </p>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={closeReviewModal}
+                  disabled={submittingReview}
+                  className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={submittingReview}
+                  className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {submittingReview ? 'Submitting...' : 'Submit Review'}
                 </button>
               </div>
             </form>

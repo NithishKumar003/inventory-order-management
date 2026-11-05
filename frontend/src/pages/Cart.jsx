@@ -59,6 +59,7 @@ export default function Cart() {
   });
 
   const [shippingAddress, setShippingAddress] = useState('');
+  const [couponCode, setCouponCode] = useState('');
   const [validated, setValidated] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [validationLoading, setValidationLoading] = useState(false);
@@ -255,7 +256,7 @@ export default function Cart() {
         items: orderItems,
         idempotency_key: crypto.randomUUID(),
         shipping_address: shippingAddress.trim(),
-        coupon_code: null,
+        coupon_code: couponCode.trim() || null,
       });
 
       createdOrder = orderResponse.data;
@@ -566,6 +567,35 @@ export default function Cart() {
             <p className="mt-1 text-sm text-slate-500">
               Complete your details to continue to secure payment.
             </p>
+
+            <div className="mt-5">
+              <label
+                htmlFor="couponCode"
+                className="mb-2 block text-sm font-semibold text-slate-700"
+              >
+                Discount Coupon
+              </label>
+
+              <input
+                id="couponCode"
+                type="text"
+                value={couponCode}
+                onChange={(event) => {
+                  setCouponCode(event.target.value.toUpperCase());
+                  setValidated(false);
+                  setError('');
+                  setMessage('');
+                }}
+                maxLength={50}
+                placeholder="Enter coupon code"
+                disabled={checkoutLoading}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm uppercase outline-none transition placeholder:normal-case placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
+              />
+
+              <p className="mt-1 text-xs text-slate-400">
+                Coupon validity and discount are checked during checkout.
+              </p>
+            </div>
 
             <div className="mt-6">
               <label

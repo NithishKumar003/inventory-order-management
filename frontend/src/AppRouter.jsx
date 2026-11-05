@@ -20,6 +20,7 @@ import Reports from './pages/Reports';
 import PaymentSuccess from './pages/PaymentSuccess';
 import PaymentCancel from './pages/PaymentCancel';
 import Notifications from './pages/Notifications';
+import Reviews from './pages/Reviews';
 import Layout from './components/Layout';
 import CustomerLayout from './components/CustomerLayout';
 
@@ -115,6 +116,7 @@ export default function AppRouter() {
           <Route path="/customers" element={<Customers />} />
           <Route path="/deliveries" element={<Deliveries />} />
           <Route path="/returns" element={<Returns />} />
+          <Route path="/reviews" element={<Reviews />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
         </Route>
