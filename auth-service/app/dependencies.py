@@ -34,9 +34,10 @@ def get_current_user(
             JWT_SECRET_KEY,
             algorithms=[JWT_ALGORITHM],
         )
+        token_type = payload.get("type")
         user_id = payload.get("sub")
 
-        if user_id is None:
+        if token_type != "access" or user_id is None:
             raise credentials_error
 
         user_id = int(user_id)

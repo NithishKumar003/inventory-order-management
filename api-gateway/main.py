@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,26 @@ PAYMENT_SERVICE_URL = os.getenv(
     "http://127.0.0.1:8006",
 )
 
+NOTIFICATION_SERVICE_URL = os.getenv(
+    "NOTIFICATION_SERVICE_URL",
+    "http://127.0.0.1:8007",
+)
+
+REVIEW_SERVICE_URL = os.getenv(
+    "REVIEW_SERVICE_URL",
+    "http://127.0.0.1:8008",
+)
+
+RETURN_SERVICE_URL = os.getenv(
+    "RETURN_SERVICE_URL",
+    "http://127.0.0.1:8009",
+)
+
+ANALYTICS_SERVICE_URL = os.getenv(
+    "ANALYTICS_SERVICE_URL",
+    "http://127.0.0.1:8010",
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=30.0)
@@ -50,6 +71,17 @@ app = FastAPI(
     description="Central entry point for the inventory microservices.",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/health")
@@ -228,6 +260,7 @@ async def forward_inventory_request(request: Request, path: str):
         "content-length",
         "transfer-encoding",
         "connection",
+        "location",
     }
 
     response_headers = {
@@ -274,8 +307,12 @@ async def inventory_health(request: Request):
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
 )
 async def inventory_gateway(request: Request, path: str = ""):
-    return await forward_inventory_request(request, f"inventory/{path}")
+    if path:
+        inventory_path = f"inventory/{path}"
+    else:
+        inventory_path = "inventory"
 
+    return await forward_inventory_request(request, inventory_path)
 
 async def forward_cart_request(request: Request, path: str):
     client = request.app.state.http_client
@@ -493,4 +530,311 @@ async def payment_gateway(request: Request, path: str = ""):
     return await forward_payment_request(
         request,
         "payments" if not path else f"payments/{path}",
+    )
+
+async def forward_notification_request(request: Request, path: str):
+    client = request.app.state.http_client
+    target_url = (
+        f"{NOTIFICATION_SERVICE_URL.rstrip('/')}/{path.lstrip('/')}"
+    )
+    body = await request.body()
+
+    try:
+        upstream_response = await client.request(
+            method=request.method,
+            url=target_url,
+            params=list(request.query_params.multi_items()),
+            content=body,
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {
+                    "host",
+                    "content-length",
+                    "connection",
+                }
+            },
+        )
+    except httpx.RequestError:
+        return Response(
+            content='{"detail":"Notification service is unavailable."}',
+            status_code=503,
+            media_type="application/json",
+        )
+
+    excluded_headers = {
+        "content-encoding",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+    }
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in excluded_headers
+    }
+
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
+
+@app.get("/notifications/health")
+async def notification_health(request: Request):
+    return await forward_notification_request(request, "health")
+
+
+@app.api_route(
+    "/notifications",
+    methods=["GET", "POST"],
+)
+@app.api_route(
+    "/notifications/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def notification_gateway(request: Request, path: str = ""):
+    return await forward_notification_request(
+        request,
+        "notifications/" if not path else f"notifications/{path}",
+    )
+async def forward_review_request(request: Request, path: str):
+    client = request.app.state.http_client
+    target_url = (
+        f"{REVIEW_SERVICE_URL.rstrip('/')}/{path.lstrip('/')}"
+    )
+    body = await request.body()
+
+    try:
+        upstream_response = await client.request(
+            method=request.method,
+            url=target_url,
+            params=list(request.query_params.multi_items()),
+            content=body,
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {
+                    "host",
+                    "content-length",
+                    "connection",
+                }
+            },
+        )
+    except httpx.RequestError:
+        return Response(
+            content='{"detail":"Review service is unavailable."}',
+            status_code=503,
+            media_type="application/json",
+        )
+
+    excluded_headers = {
+        "content-encoding",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+    }
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in excluded_headers
+    }
+
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
+
+@app.get("/reviews/health")
+async def review_health(request: Request):
+    return await forward_review_request(request, "health")
+
+
+@app.api_route(
+    "/reviews",
+    methods=["GET", "POST"],
+)
+@app.api_route(
+    "/reviews/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def review_gateway(request: Request, path: str = ""):
+    gateway_path = request.url.path.strip("/")
+
+    if gateway_path == "reviews":
+        service_path = "reviews"
+    elif gateway_path.startswith("reviews/products/"):
+        service_path = gateway_path[len("reviews/"):]
+    elif gateway_path == "reviews/me":
+        service_path = "reviews/me"
+    elif gateway_path.startswith("reviews/admin/"):
+        service_path = "admin/reviews/" + gateway_path[len("reviews/admin/"):]
+    elif gateway_path == "reviews/admin":
+        service_path = "admin/reviews"
+    else:
+        service_path = gateway_path[len("reviews/"):]
+
+    return await forward_review_request(request, service_path)
+
+# ==============================
+# RETURN SERVICE
+# ==============================
+
+async def forward_return_request(request: Request, path: str):
+    client = request.app.state.http_client
+
+    target_url = (
+        f"{RETURN_SERVICE_URL.rstrip('/')}/{path.lstrip('/')}"
+    )
+
+    body = await request.body()
+
+    try:
+        upstream_response = await client.request(
+            method=request.method,
+            url=target_url,
+            params=list(request.query_params.multi_items()),
+            content=body,
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {
+                    "host",
+                    "content-length",
+                    "connection",
+                }
+            },
+        )
+
+    except httpx.RequestError:
+        return Response(
+            content='{"detail":"Return service is unavailable."}',
+            status_code=503,
+            media_type="application/json",
+        )
+
+    excluded_headers = {
+        "content-encoding",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+    }
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in excluded_headers
+    }
+
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
+
+@app.get("/returns/health")
+async def return_health(request: Request):
+    return await forward_return_request(
+        request,
+        "health",
+    )
+
+
+@app.api_route(
+    "/returns",
+    methods=["GET", "POST"],
+)
+@app.api_route(
+    "/returns/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def return_gateway(request: Request, path: str = ""):
+    return await forward_return_request(
+        request,
+        "returns" if not path else f"returns/{path}",
+    )
+    
+# ==============================
+# ANALYTICS SERVICE
+# ==============================
+
+async def forward_analytics_request(request: Request, path: str):
+    client = request.app.state.http_client
+
+    target_url = (
+        f"{ANALYTICS_SERVICE_URL.rstrip('/')}/{path.lstrip('/')}"
+    )
+
+    body = await request.body()
+
+    try:
+        upstream_response = await client.request(
+            method=request.method,
+            url=target_url,
+            params=list(request.query_params.multi_items()),
+            content=body,
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {
+                    "host",
+                    "content-length",
+                    "connection",
+                }
+            },
+        )
+
+    except httpx.RequestError:
+        return Response(
+            content='{"detail":"Analytics service is unavailable."}',
+            status_code=503,
+            media_type="application/json",
+        )
+
+    excluded_headers = {
+        "content-encoding",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+    }
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in excluded_headers
+    }
+
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
+
+@app.get("/analytics/health")
+async def analytics_health(request: Request):
+    return await forward_analytics_request(
+        request,
+        "health",
+    )
+
+
+@app.api_route(
+    "/analytics",
+    methods=["GET", "POST"],
+)
+@app.api_route(
+    "/analytics/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def analytics_gateway(request: Request, path: str = ""):
+    return await forward_analytics_request(
+        request,
+        "analytics" if not path else f"analytics/{path}",
     )

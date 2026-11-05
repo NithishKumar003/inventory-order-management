@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.main import app, get_db
+from app.auth import verify_order_service
 from app.models import Inventory
 
 
@@ -34,13 +35,16 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_test_database():
-    # Create the isolated test tables.
+    # Create isolated test tables.
     Base.metadata.create_all(bind=test_engine)
 
-    # Ensure these tests use the test database.
+    # Connect API requests to the test database.
     app.dependency_overrides[get_db] = override_get_db
 
-    # Add fresh test stock before each test.
+    # Bypass internal service authentication for unit tests.
+    app.dependency_overrides[verify_order_service] = lambda: True
+
+    # Add fresh test stock.
     with TestSessionLocal() as db:
         db.add(
             Inventory(
@@ -52,8 +56,15 @@ def setup_test_database():
 
     yield
 
-    # Remove the override and clean up the test tables.
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[verify_order_service] = lambda: True
+
+    # Remove dependency overrides.
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(verify_order_service, None)
+
+    # Clean up test tables.
     Base.metadata.drop_all(bind=test_engine)
 
 

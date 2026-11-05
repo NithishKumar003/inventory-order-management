@@ -1,16 +1,21 @@
-
+import asyncio
 import json
+import sys
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+
+# Add the API Gateway folder to Python's import path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 
 
 @pytest.fixture
 def gateway(monkeypatch):
-    """Test the gateway with a fake downstream service."""
+    """Test the gateway with fake downstream services."""
     captured = {}
 
     service_urls = {
@@ -20,6 +25,9 @@ def gateway(monkeypatch):
         "CART_SERVICE_URL": "http://cart.test",
         "ORDER_SERVICE_URL": "http://order.test",
         "PAYMENT_SERVICE_URL": "http://payment.test",
+        "NOTIFICATION_SERVICE_URL": "http://notification.test",
+        "REVIEW_SERVICE_URL": "http://review.test",
+        "RETURN_SERVICE_URL": "http://return.test",
     }
 
     for setting, url in service_urls.items():
@@ -48,7 +56,6 @@ def gateway(monkeypatch):
     yield client, captured
 
     client.close()
-    import asyncio
     asyncio.run(upstream_client.aclose())
 
 
@@ -70,7 +77,7 @@ def test_gateway_health(gateway):
         ("/auth/health", "http://auth.test/health"),
         ("/products", "http://product.test/products"),
         ("/products/12", "http://product.test/products/12"),
-       ("/inventory", "http://inventory.test/inventory/"),
+        ("/inventory", "http://inventory.test/inventory/"),
         ("/inventory/12", "http://inventory.test/inventory/12"),
         ("/cart", "http://cart.test/cart"),
         ("/cart/health", "http://cart.test/health"),
@@ -79,6 +86,41 @@ def test_gateway_health(gateway):
         ("/orders/health", "http://order.test/health"),
         ("/payments", "http://payment.test/payments"),
         ("/payments/health", "http://payment.test/health"),
+        (
+            "/notifications/",
+            "http://notification.test/notifications/",
+        ),
+        (
+            "/notifications/health",
+            "http://notification.test/health",
+        ),
+        ("/reviews", "http://review.test/reviews"),
+        ("/reviews/me", "http://review.test/reviews/me"),
+        (
+            "/reviews/products/5/reviews",
+            "http://review.test/products/5/reviews",
+        ),
+        (
+            "/reviews/products/5/rating-summary",
+            "http://review.test/products/5/rating-summary",
+        ),
+        (
+            "/reviews/admin",
+            "http://review.test/admin/reviews",
+        ),
+        (
+            "/reviews/admin/1/moderation",
+            "http://review.test/admin/reviews/1/moderation",
+        ),
+        ("/reviews/health", "http://review.test/health"),
+        ("/returns", "http://return.test/returns"),
+        ("/returns/me", "http://return.test/returns/me"),
+        ("/returns/admin", "http://return.test/returns/admin"),
+        (
+            "/returns/admin/1/moderation",
+            "http://return.test/returns/admin/1/moderation",
+        ),
+        ("/returns/health", "http://return.test/health"),
     ],
 )
 def test_service_routing(gateway, gateway_path, expected_url):
@@ -105,6 +147,15 @@ def test_service_routing(gateway, gateway_path, expected_url):
         ("DELETE", "/cart"),
         ("POST", "/orders"),
         ("POST", "/payments/checkout"),
+        ("GET", "/notifications/"),
+        ("POST", "/notifications/"),
+        ("PATCH", "/notifications/1/read"),
+        ("POST", "/reviews"),
+        ("GET", "/reviews/me"),
+        ("PATCH", "/reviews/admin/1/moderation"),
+        ("POST", "/returns"),
+        ("GET", "/returns/me"),
+        ("PATCH", "/returns/admin/1/moderation"),
     ],
 )
 def test_http_method_forwarding(gateway, method, path):
@@ -136,8 +187,37 @@ def test_query_parameters_are_forwarded(gateway):
     ]
 
 
+def test_review_query_parameters_are_forwarded(gateway):
+    client, captured = gateway
+
+    response = client.get(
+        "/reviews/products/5/reviews",
+        params=[("rating", 5)],
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == (
+        "http://review.test/products/5/reviews?rating=5"
+    )
+
+
+def test_return_query_parameters_are_forwarded(gateway):
+    client, captured = gateway
+
+    response = client.get(
+        "/returns/me",
+        params=[("status", "APPROVED")],
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == (
+        "http://return.test/returns/me?status=APPROVED"
+    )
+
+
 def test_json_body_is_forwarded(gateway):
     client, captured = gateway
+
     payload = {
         "name": "Test Product",
         "sku": "TEST-001",
@@ -145,6 +225,40 @@ def test_json_body_is_forwarded(gateway):
     }
 
     response = client.post("/products", json=payload)
+
+    assert response.status_code == 200
+    assert json.loads(captured["body"]) == payload
+
+
+def test_review_json_body_is_forwarded(gateway):
+    client, captured = gateway
+
+    payload = {
+        "product_id": 5,
+        "order_id": 1,
+        "rating": 5,
+        "title": "Excellent",
+        "comment": "Works perfectly",
+    }
+
+    response = client.post("/reviews", json=payload)
+
+    assert response.status_code == 200
+    assert json.loads(captured["body"]) == payload
+
+
+def test_return_json_body_is_forwarded(gateway):
+    client, captured = gateway
+
+    payload = {
+        "order_id": 1,
+        "order_item_id": 10,
+        "quantity": 1,
+        "reason": "Product is damaged",
+        "idempotency_key": "return-test-001",
+    }
+
+    response = client.post("/returns", json=payload)
 
     assert response.status_code == 200
     assert json.loads(captured["body"]) == payload
@@ -162,6 +276,44 @@ def test_authorization_header_is_forwarded(gateway):
     assert captured["headers"]["authorization"] == "Bearer test-token"
 
 
+def test_review_authorization_header_is_forwarded(gateway):
+    client, captured = gateway
+
+    response = client.post(
+        "/reviews",
+        headers={"Authorization": "Bearer review-test-token"},
+        json={"product_id": 5, "order_id": 1, "rating": 5},
+    )
+
+    assert response.status_code == 200
+    assert (
+        captured["headers"]["authorization"]
+        == "Bearer review-test-token"
+    )
+
+
+def test_return_authorization_header_is_forwarded(gateway):
+    client, captured = gateway
+
+    response = client.post(
+        "/returns",
+        headers={"Authorization": "Bearer return-test-token"},
+        json={
+            "order_id": 1,
+            "order_item_id": 10,
+            "quantity": 1,
+            "reason": "Product is damaged",
+            "idempotency_key": "return-test-001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        captured["headers"]["authorization"]
+        == "Bearer return-test-token"
+    )
+
+
 def test_downstream_response_is_preserved(gateway):
     client, _ = gateway
 
@@ -175,18 +327,51 @@ def test_downstream_response_is_preserved(gateway):
 @pytest.mark.parametrize(
     ("path", "service_setting", "error_message"),
     [
-        ("/auth/login", "AUTH_SERVICE_URL",
-         "Authentication service is unavailable."),
-        ("/products", "PRODUCT_SERVICE_URL",
-         "Product service is unavailable."),
-        ("/inventory/1", "INVENTORY_SERVICE_URL",
-         "Inventory service is unavailable."),
-        ("/cart", "CART_SERVICE_URL",
-         "Cart service is unavailable."),
-        ("/orders", "ORDER_SERVICE_URL",
-         "Order service is unavailable."),
-        ("/payments/checkout", "PAYMENT_SERVICE_URL",
-         "Payment service is unavailable."),
+        (
+            "/auth/login",
+            "AUTH_SERVICE_URL",
+            "Authentication service is unavailable.",
+        ),
+        (
+            "/products",
+            "PRODUCT_SERVICE_URL",
+            "Product service is unavailable.",
+        ),
+        (
+            "/inventory/1",
+            "INVENTORY_SERVICE_URL",
+            "Inventory service is unavailable.",
+        ),
+        (
+            "/cart",
+            "CART_SERVICE_URL",
+            "Cart service is unavailable.",
+        ),
+        (
+            "/orders",
+            "ORDER_SERVICE_URL",
+            "Order service is unavailable.",
+        ),
+        (
+            "/payments/checkout",
+            "PAYMENT_SERVICE_URL",
+            "Payment service is unavailable.",
+        ),
+        (
+            "/notifications/",
+            "NOTIFICATION_SERVICE_URL",
+            "Notification service is unavailable.",
+        ),
+        (
+            "/reviews",
+            "REVIEW_SERVICE_URL",
+            "Review service is unavailable.",
+        ),
+        (
+            "/returns",
+            "RETURN_SERVICE_URL",
+            "Return service is unavailable.",
+        ),
     ],
 )
 def test_service_unavailable_returns_503(

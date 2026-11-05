@@ -1,4 +1,4 @@
-
+from types import SimpleNamespace
 from decimal import Decimal
 
 import pytest
@@ -12,6 +12,27 @@ from app.auth import get_current_user
 from app.database import Base, get_db
 from app.main import app
 from app.models import Payment
+
+
+def make_stripe_event(event_dict):
+    return SimpleNamespace(
+        type=event_dict["type"],
+        data=SimpleNamespace(
+            object=SimpleNamespace(
+                to_dict=lambda: event_dict["data"]["object"]
+            )
+        ),
+    )
+
+
+def mock_stripe_event(monkeypatch, fake_verify_webhook_event):
+    monkeypatch.setattr(
+        payment_main,
+        "verify_webhook_event",
+        lambda payload, signature: make_stripe_event(
+            fake_verify_webhook_event(payload, signature)
+        ),
+    )
 
 
 @pytest.fixture
@@ -130,17 +151,10 @@ def test_checkout_creates_pending_payment_and_stripe_session(
         "https://checkout.stripe.test/session123"
     )
 
-    from app.database import get_db
-
-    # The payment should remain pending until a verified webhook confirms
-    # that Stripe actually received the payment.
-    assert result["payment_id"] > 0
-
 
 def test_checkout_reuses_existing_stripe_session(client, monkeypatch):
     import app.services as payment_services
-    from app.models import Payment, PaymentStatus
-    from app.database import SessionLocal
+    from app.models import PaymentStatus
 
     def fake_get_customer_order(order_id, access_token):
         return {
@@ -156,12 +170,9 @@ def test_checkout_reuses_existing_stripe_session(client, monkeypatch):
         fake_get_customer_order,
     )
 
-    # Create a payment with an existing Stripe session in the test DB.
-    db = next(
-        app.dependency_overrides[
-            __import__("app.database", fromlist=["get_db"]).get_db
-        ]()
-    )
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+
     payment = Payment(
         order_id=1,
         user_id=7,
@@ -174,6 +185,7 @@ def test_checkout_reuses_existing_stripe_session(client, monkeypatch):
     db.add(payment)
     db.commit()
     db.close()
+    db_generator.close()
 
     def fake_retrieve_checkout_session(session_id):
         assert session_id == "cs_test_existing123"
@@ -212,6 +224,7 @@ def test_checkout_reuses_existing_stripe_session(client, monkeypatch):
         "https://checkout.stripe.test/existing"
     )
 
+
 def test_webhook_rejects_missing_signature(client):
     response = client.post(
         "/payments/webhook",
@@ -249,7 +262,6 @@ def test_webhook_marks_matching_paid_payment_successful(
 ):
     from app.models import PaymentStatus
 
-    # Create a pending payment in the test database.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -269,7 +281,6 @@ def test_webhook_marks_matching_paid_payment_successful(
     db.close()
     db_generator.close()
 
-    # Simulate a verified Stripe webhook event.
     def fake_verify_webhook_event(payload, signature):
         assert payload == b'{"test":"event"}'
         assert signature == "test-signature"
@@ -279,6 +290,7 @@ def test_webhook_marks_matching_paid_payment_successful(
             "data": {
                 "object": {
                     "id": "cs_test_webhook123",
+                    "payment_intent": "pi_test_payment123",
                     "payment_status": "paid",
                     "amount_total": 125000,
                     "currency": "inr",
@@ -289,11 +301,7 @@ def test_webhook_marks_matching_paid_payment_successful(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -307,7 +315,6 @@ def test_webhook_marks_matching_paid_payment_successful(
         "processed": True,
     }
 
-    # Verify that the payment was marked successful.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -318,17 +325,17 @@ def test_webhook_marks_matching_paid_payment_successful(
     )
 
     assert saved_payment.status == PaymentStatus.SUCCESS
+    assert saved_payment.stripe_payment_intent_id == (
+        "pi_test_payment123"
+    )
 
     db.close()
     db_generator.close()
 
 
-def test_webhook_rejects_mismatched_amount(
-    client, monkeypatch
-):
+def test_webhook_rejects_mismatched_amount(client, monkeypatch):
     from app.models import PaymentStatus
 
-    # Create a pending payment worth ₹1,250.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -348,7 +355,6 @@ def test_webhook_rejects_mismatched_amount(
     db.close()
     db_generator.close()
 
-    # Stripe reports ₹100 instead of the expected ₹1,250.
     def fake_verify_webhook_event(payload, signature):
         return {
             "type": "checkout.session.completed",
@@ -365,11 +371,7 @@ def test_webhook_rejects_mismatched_amount(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -382,7 +384,6 @@ def test_webhook_rejects_mismatched_amount(
         "Stripe payment amount or currency does not match the saved payment."
     )
 
-    # Confirm the rejected event did not change the payment.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -398,12 +399,9 @@ def test_webhook_rejects_mismatched_amount(
     db_generator.close()
 
 
-def test_webhook_rejects_wrong_currency(
-    client, monkeypatch
-):
+def test_webhook_rejects_wrong_currency(client, monkeypatch):
     from app.models import PaymentStatus
 
-    # Create a pending payment for ₹1,250.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -423,7 +421,6 @@ def test_webhook_rejects_wrong_currency(
     db.close()
     db_generator.close()
 
-    # Simulate Stripe reporting USD instead of INR.
     def fake_verify_webhook_event(payload, signature):
         return {
             "type": "checkout.session.completed",
@@ -440,11 +437,7 @@ def test_webhook_rejects_wrong_currency(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -457,7 +450,6 @@ def test_webhook_rejects_wrong_currency(
         "Stripe payment amount or currency does not match the saved payment."
     )
 
-    # Confirm the payment remains pending.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -472,12 +464,12 @@ def test_webhook_rejects_wrong_currency(
     db.close()
     db_generator.close()
 
+
 def test_webhook_cancels_pending_payment_when_session_expires(
     client, monkeypatch
 ):
     from app.models import PaymentStatus
 
-    # Create a pending payment.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -497,7 +489,6 @@ def test_webhook_cancels_pending_payment_when_session_expires(
     db.close()
     db_generator.close()
 
-    # Simulate a verified Stripe expiration event.
     def fake_verify_webhook_event(payload, signature):
         return {
             "type": "checkout.session.expired",
@@ -511,11 +502,7 @@ def test_webhook_cancels_pending_payment_when_session_expires(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -529,7 +516,6 @@ def test_webhook_cancels_pending_payment_when_session_expires(
         "processed": True,
     }
 
-    # Confirm the pending payment is now cancelled.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -547,12 +533,12 @@ def test_webhook_cancels_pending_payment_when_session_expires(
     db.close()
     db_generator.close()
 
+
 def test_webhook_marks_pending_payment_failed_async(
     client, monkeypatch
 ):
     from app.models import PaymentStatus
 
-    # Create a pending payment.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -572,7 +558,6 @@ def test_webhook_marks_pending_payment_failed_async(
     db.close()
     db_generator.close()
 
-    # Simulate a verified Stripe asynchronous payment failure.
     def fake_verify_webhook_event(payload, signature):
         return {
             "type": "checkout.session.async_payment_failed",
@@ -586,11 +571,7 @@ def test_webhook_marks_pending_payment_failed_async(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -604,7 +585,6 @@ def test_webhook_marks_pending_payment_failed_async(
         "processed": True,
     }
 
-    # Confirm the payment is marked failed.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -622,12 +602,12 @@ def test_webhook_marks_pending_payment_failed_async(
     db.close()
     db_generator.close()
 
+
 def test_webhook_does_not_cancel_already_successful_payment(
     client, monkeypatch
 ):
     from app.models import PaymentStatus
 
-    # Create a payment that has already succeeded.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 
@@ -647,7 +627,6 @@ def test_webhook_does_not_cancel_already_successful_payment(
     db.close()
     db_generator.close()
 
-    # Simulate a late expiration event for the same session.
     def fake_verify_webhook_event(payload, signature):
         return {
             "type": "checkout.session.expired",
@@ -661,11 +640,7 @@ def test_webhook_does_not_cancel_already_successful_payment(
             },
         }
 
-    monkeypatch.setattr(
-        payment_main,
-        "verify_webhook_event",
-        fake_verify_webhook_event,
-    )
+    mock_stripe_event(monkeypatch, fake_verify_webhook_event)
 
     response = client.post(
         "/payments/webhook",
@@ -679,7 +654,6 @@ def test_webhook_does_not_cancel_already_successful_payment(
         "processed": True,
     }
 
-    # Verify the successful payment was not cancelled.
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
 

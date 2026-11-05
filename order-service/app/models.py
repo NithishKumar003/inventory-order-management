@@ -9,6 +9,7 @@ from sqlalchemy import (
     Numeric,
     Text,
     UniqueConstraint,
+    Boolean,
 )
 from sqlalchemy.orm import relationship
 
@@ -37,6 +38,7 @@ class Order(Base):
     subtotal = Column(Numeric(12, 2), nullable=False, default=0)
     tax_amount = Column(Numeric(12, 2), nullable=False, default=0)
     discount_amount = Column(Numeric(12, 2), nullable=False, default=0)
+    coupon_code = Column(String(40), nullable=True)
     shipping_amount = Column(Numeric(12, 2), nullable=False, default=0)
     total_amount = Column(Numeric(12, 2), nullable=False, default=0)
 
@@ -63,6 +65,12 @@ class Order(Base):
         "OrderItem",
         back_populates="order",
         cascade="all, delete-orphan",
+    )
+    
+    status_history = relationship(
+        "OrderStatusHistory",
+        cascade="all, delete-orphan",
+        order_by="OrderStatusHistory.created_at",
     )
 
     __table_args__ = (
@@ -148,6 +156,55 @@ class FullOrderCancellation(Base):
         index=True,
     )
     reason = Column(Text, nullable=False)
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=current_utc_time,
+    )
+
+class OrderStatusHistory(Base):
+    __tablename__ = "order_status_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    order_id = Column(
+        Integer,
+        ForeignKey("orders.id"),
+        nullable=False,
+        index=True,
+    )
+
+    status = Column(String(20), nullable=False)
+
+    note = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=current_utc_time,
+    )
+    
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    code = Column(String(40), unique=True, nullable=False, index=True)
+    discount_type = Column(String(10), nullable=False)  # PERCENT or FIXED
+    discount_value = Column(Numeric(12, 2), nullable=False)
+    minimum_order_amount = Column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+    )
+    maximum_discount_amount = Column(Numeric(12, 2), nullable=True)
+    usage_limit = Column(Integer, nullable=True)
+    usage_count = Column(Integer, nullable=False, default=0)
+
+    starts_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+
     created_at = Column(
         DateTime,
         nullable=False,

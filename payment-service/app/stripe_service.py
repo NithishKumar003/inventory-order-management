@@ -33,7 +33,6 @@ def create_checkout_session(
     session = stripe.checkout.Session.create(
         idempotency_key=f"payment-{idempotency_key}",
         mode="payment",
-        payment_method_types=["card"],
         client_reference_id=str(payment_id),
         metadata={
             "payment_id": str(payment_id),
@@ -66,15 +65,26 @@ def create_checkout_session(
         "checkout_url": session.url,
     }
 
+
 def retrieve_checkout_session(session_id: str) -> dict:
-    """Retrieve an existing Stripe Checkout Session."""
+    """Retrieve an existing Stripe Checkout Session and its payment details."""
 
     session = stripe.checkout.Session.retrieve(session_id)
 
     return {
         "session_id": session.id,
         "checkout_url": session.url,
+        "payment_status": session.payment_status,
+        "amount_total": session.amount_total,
+        "currency": session.currency,
+        "metadata": session.metadata.to_dict(),
+        "payment_intent": (
+            session.payment_intent.id
+            if hasattr(session.payment_intent, "id")
+            else session.payment_intent
+        ),
     }
+
 
 
 def verify_webhook_event(payload: bytes, signature: str) -> dict:
@@ -87,4 +97,19 @@ def verify_webhook_event(payload: bytes, signature: str) -> dict:
         payload,
         signature,
         STRIPE_WEBHOOK_SECRET,
+    )
+
+def create_stripe_refund(
+    payment_intent_id: str,
+    amount_minor: int,
+    idempotency_key: str,
+):
+    """Create a refund through Stripe using an idempotency key."""
+    if not STRIPE_SECRET_KEY:
+        raise RuntimeError("Stripe is not configured.")
+
+    return stripe.Refund.create(
+        payment_intent=payment_intent_id,
+        amount=amount_minor,
+        idempotency_key=idempotency_key,
     )

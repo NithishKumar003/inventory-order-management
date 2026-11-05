@@ -39,8 +39,9 @@ def get_current_user_id(
         )
 
         subject = payload.get("sub")
+        token_type = payload.get("type")
 
-        if subject is None:
+        if subject is None or token_type != "access":
             raise unauthorized_error
 
         user_id = int(subject)

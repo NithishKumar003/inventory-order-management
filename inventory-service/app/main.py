@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import httpx
 
+from app.auth import require_inventory_manager, verify_order_service
 from app.database import SessionLocal
 from app.models import Inventory, StockMovement, StockRelease, StockReservation
 from app.schemas import (
@@ -26,6 +27,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
 def get_db():
     db = SessionLocal()
     try:
@@ -34,16 +36,20 @@ def get_db():
         db.close()
 
 
+# --------------------------------------------------
+# INTERNAL ORDER SERVICE: STOCK RESERVATIONS
+# --------------------------------------------------
+
 @app.post(
     "/inventory/reservations",
     response_model=StockReservationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_order_service)],
 )
 def create_stock_reservation(
     reservation_data: StockReservationCreate,
     db: Session = Depends(get_db),
 ):
-    # Check whether this reservation key has already been used.
     existing_reservation = (
         db.query(StockReservation)
         .filter(
@@ -55,24 +61,21 @@ def create_stock_reservation(
 
     if existing_reservation is not None:
         if (
-            existing_reservation.product_id
-            == reservation_data.product_id
-            and existing_reservation.quantity
-            == reservation_data.quantity
+            existing_reservation.product_id == reservation_data.product_id
+            and existing_reservation.quantity == reservation_data.quantity
             and existing_reservation.status == "reserved"
         ):
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=409,
                 detail="This reservation already exists.",
             )
 
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=409,
             detail="Reservation key has already been used.",
         )
 
     try:
-        # Deduct stock only if enough units are available.
         stock_update = db.execute(
             update(Inventory)
             .where(
@@ -97,12 +100,12 @@ def create_stock_reservation(
 
             if product_exists is None:
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
+                    status_code=404,
                     detail="Inventory not found for this product.",
                 )
 
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=409,
                 detail="Insufficient stock for this reservation.",
             )
 
@@ -132,22 +135,26 @@ def create_stock_reservation(
     except IntegrityError:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=409,
             detail="Reservation key has already been used.",
         )
 
     except Exception:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail="Failed to reserve stock.",
         )
 
 
+# --------------------------------------------------
+# INTERNAL ORDER SERVICE: FULL STOCK RELEASE
+# --------------------------------------------------
 
 @app.post(
     "/inventory/reservations/{reservation_key}/release",
     response_model=StockReservationResponse,
+    dependencies=[Depends(verify_order_service)],
 )
 def release_stock_reservation(
     reservation_key: str,
@@ -166,7 +173,7 @@ def release_stock_reservation(
 
         if reservation is None:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=404,
                 detail="Reservation not found.",
             )
 
@@ -175,11 +182,10 @@ def release_stock_reservation(
 
         if reservation.status != "reserved":
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=409,
                 detail="Only reserved stock can be released.",
             )
 
-        # Calculate only the stock that has not already been released.
         remaining_quantity = (
             reservation.quantity - reservation.released_quantity
         )
@@ -191,7 +197,6 @@ def release_stock_reservation(
             db.refresh(reservation)
             return reservation
 
-        # Restore only the remaining reserved stock.
         stock_update = db.execute(
             update(Inventory)
             .where(
@@ -204,11 +209,10 @@ def release_stock_reservation(
 
         if stock_update.rowcount != 1:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=404,
                 detail="Inventory not found for this reservation.",
             )
 
-        # Record the actual quantity restored.
         db.add(
             StockMovement(
                 product_id=reservation.product_id,
@@ -232,14 +236,19 @@ def release_stock_reservation(
     except Exception:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail="Failed to release stock reservation.",
         )
 
 
+# --------------------------------------------------
+# INTERNAL ORDER SERVICE: PARTIAL STOCK RELEASE
+# --------------------------------------------------
+
 @app.post(
     "/inventory/reservations/{reservation_key}/partial-release",
     response_model=StockReservationResponse,
+    dependencies=[Depends(verify_order_service)],
 )
 def partially_release_stock_reservation(
     reservation_key: str,
@@ -247,10 +256,11 @@ def partially_release_stock_reservation(
     db: Session = Depends(get_db),
 ):
     try:
-        # 1. Check whether this release operation was already processed.
         existing_release = (
             db.query(StockRelease)
-            .filter(StockRelease.release_key == release_data.release_key)
+            .filter(
+                StockRelease.release_key == release_data.release_key
+            )
             .first()
         )
 
@@ -281,7 +291,6 @@ def partially_release_stock_reservation(
 
             return reservation
 
-        # 2. Find the reservation.
         reservation = (
             db.query(StockReservation)
             .filter(
@@ -297,7 +306,6 @@ def partially_release_stock_reservation(
                 detail="Reservation not found.",
             )
 
-        # 3. Calculate how much stock is still reserved.
         remaining_quantity = (
             reservation.quantity - reservation.released_quantity
         )
@@ -314,10 +322,11 @@ def partially_release_stock_reservation(
                 detail="Release quantity exceeds the remaining reservation.",
             )
 
-        # 4. Restore only the requested quantity.
         stock_update = db.execute(
             update(Inventory)
-            .where(Inventory.product_id == reservation.product_id)
+            .where(
+                Inventory.product_id == reservation.product_id
+            )
             .values(
                 quantity=Inventory.quantity + release_data.quantity
             )
@@ -329,7 +338,6 @@ def partially_release_stock_reservation(
                 detail="Inventory not found for this reservation.",
             )
 
-        # 5. Record the release and update the reservation.
         reservation.released_quantity += release_data.quantity
 
         if reservation.released_quantity == reservation.quantity:
@@ -368,14 +376,28 @@ def partially_release_stock_reservation(
             detail="Failed to partially release stock reservation.",
         )
 
+
+# --------------------------------------------------
+# PUBLIC HEALTH CHECK
+# --------------------------------------------------
+
 @app.get("/health")
 def health_check():
-    return{
+    return {
         "status": "healthy",
         "service": "inventory-service",
     }
 
-@app.get("/inventory", response_model=list[InventoryResponse])
+
+# --------------------------------------------------
+# ADMIN / INVENTORY MANAGER: INVENTORY MANAGEMENT
+# --------------------------------------------------
+
+@app.get(
+    "/inventory",
+    response_model=list[InventoryResponse],
+    dependencies=[Depends(require_inventory_manager)],
+)
 def list_inventory(db: Session = Depends(get_db)):
     return (
         db.query(Inventory)
@@ -383,20 +405,21 @@ def list_inventory(db: Session = Depends(get_db)):
         .all()
     )
 
+
 @app.post(
     "/inventory",
     response_model=InventoryResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_inventory_manager)],
 )
 def create_inventory(
     inventory_data: InventoryCreate,
     db: Session = Depends(get_db),
 ):
-
     try:
         product_response = httpx.get(
             f"{PRODUCT_SERVICE_URL}/products/{inventory_data.product_id}",
-            timeout=5.0
+            timeout=5.0,
         )
 
     except httpx.RequestError:
@@ -408,7 +431,7 @@ def create_inventory(
     if product_response.status_code == 404:
         raise HTTPException(
             status_code=404,
-            detail="Product does not exists.",
+            detail="Product does not exist.",
         )
 
     if product_response.status_code != 200:
@@ -427,7 +450,7 @@ def create_inventory(
 
     if existing_inventory:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=409,
             detail="Inventory already exists for this product.",
         )
 
@@ -442,9 +465,11 @@ def create_inventory(
 
     return new_inventory
 
+
 @app.get(
     "/inventory/movements",
     response_model=list[StockMovementResponse],
+    dependencies=[Depends(require_inventory_manager)],
 )
 def list_stock_movements(
     product_id: int | None = None,
@@ -480,7 +505,10 @@ def list_stock_movements(
     )
 
 
-@app.get("/inventory/low-stock")
+@app.get(
+    "/inventory/low-stock",
+    dependencies=[Depends(require_inventory_manager)],
+)
 def get_low_stock(
     threshold: int = 10,
     db: Session = Depends(get_db),
@@ -491,14 +519,17 @@ def get_low_stock(
             detail="Threshold cannot be negative.",
         )
 
-    low_stock_items = (
+    return (
         db.query(Inventory)
         .filter(Inventory.quantity <= threshold)
         .order_by(Inventory.quantity)
         .all()
     )
 
-    return low_stock_items
+
+# --------------------------------------------------
+# PUBLIC PRODUCT STOCK LOOKUP
+# --------------------------------------------------
 
 @app.get(
     "/inventory/{product_id}",
@@ -517,14 +548,20 @@ def get_inventory(
     if inventory is None:
         raise HTTPException(
             status_code=404,
-            detail="Inventory not found for this product."
+            detail="Inventory not found for this product.",
         )
 
     return inventory
 
+
+# --------------------------------------------------
+# ADMIN / INVENTORY MANAGER: UPDATE AND DELETE STOCK
+# --------------------------------------------------
+
 @app.put(
     "/inventory/{product_id}",
     response_model=InventoryResponse,
+    dependencies=[Depends(require_inventory_manager)],
 )
 def update_inventory(
     product_id: int,
@@ -540,7 +577,7 @@ def update_inventory(
     if inventory is None:
         raise HTTPException(
             status_code=404,
-            detail="Invenory not found for this product.",
+            detail="Inventory not found for this product.",
         )
 
     inventory.quantity = inventory_data.quantity
@@ -550,7 +587,11 @@ def update_inventory(
 
     return inventory
 
-@app.delete("/inventory/{product_id}")
+
+@app.delete(
+    "/inventory/{product_id}",
+    dependencies=[Depends(require_inventory_manager)],
+)
 def delete_inventory(
     product_id: int,
     db: Session = Depends(get_db),
@@ -575,10 +616,16 @@ def delete_inventory(
         "product_id": product_id,
     }
 
+
+# --------------------------------------------------
+# ADMIN / INVENTORY MANAGER: STOCK MOVEMENTS
+# --------------------------------------------------
+
 @app.post(
     "/inventory/movements",
     response_model=StockMovementResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_inventory_manager)],
 )
 def create_stock_movement(
     movement_data: StockMovementCreate,
@@ -586,7 +633,9 @@ def create_stock_movement(
 ):
     inventory = (
         db.query(Inventory)
-        .filter(Inventory.product_id == movement_data.product_id)
+        .filter(
+            Inventory.product_id == movement_data.product_id
+        )
         .first()
     )
 
@@ -596,7 +645,9 @@ def create_stock_movement(
             detail="Inventory not found for this product.",
         )
 
-    new_quantity = inventory.quantity + movement_data.quantity_change
+    new_quantity = (
+        inventory.quantity + movement_data.quantity_change
+    )
 
     if new_quantity < 0:
         raise HTTPException(
@@ -605,7 +656,7 @@ def create_stock_movement(
         )
 
     new_movement = StockMovement(
-        product_id = movement_data.product_id,
+        product_id=movement_data.product_id,
         quantity_change=movement_data.quantity_change,
         reason=movement_data.reason,
     )
@@ -615,6 +666,7 @@ def create_stock_movement(
         db.add(new_movement)
         db.commit()
         db.refresh(new_movement)
+
     except Exception:
         db.rollback()
         raise HTTPException(

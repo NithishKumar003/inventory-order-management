@@ -1,0 +1,300 @@
+services:
+
+  # -------------------------
+  # RABBITMQ
+  # -------------------------
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: inventory-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------
+  # AUTH SERVICE
+  # -------------------------
+  auth-service:
+    build: ./auth-service
+    image: inventory-auth-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./auth-service/.env
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./auth-service/auth.db:/app/auth.db
+
+  # -------------------------
+  # PRODUCT SERVICE
+  # -------------------------
+  product-service:
+    build: ./product-service
+    image: inventory-product-service:latest
+    restart: unless-stopped
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./product-service/products.db:/app/products.db
+    depends_on:
+      - auth-service
+    
+  # -------------------------
+  # INVENTORY SERVICE
+  # -------------------------
+  inventory-service:
+    build: ./inventory-service
+    image: inventory-inventory-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./inventory-service/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./inventory-service/inventory.db:/app/inventory.db
+    depends_on:
+      - auth-service
+      - product-service
+
+  # -------------------------
+  # CART SERVICE
+  # -------------------------
+  cart-service:
+    build: ./cart-service
+    image: inventory-cart-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./cart-service/.env
+    environment:
+      PRODUCT_SERVICE_URL: http://product-service:8002
+      INVENTORY_SERVICE_URL: http://inventory-service:8003
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./cart-service/cart.db:/app/cart.db
+    depends_on:
+      - product-service
+      - inventory-service
+
+  # -------------------------
+  # ORDER SERVICE
+  # -------------------------
+  order-service:
+    build: ./order-service
+    image: inventory-order-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./order-service/.env
+    environment:
+      PRODUCT_SERVICE_URL: http://product-service:8002
+      INVENTORY_SERVICE_URL: http://inventory-service:8003
+      CART_SERVICE_URL: http://cart-service:8004
+      AUTH_SERVICE_URL: http://auth-service:8001
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./order-service/orders.db:/app/orders.db
+    depends_on:
+      - auth-service
+      - product-service
+      - inventory-service
+      - cart-service
+
+  # -------------------------
+  # PAYMENT SERVICE
+  # -------------------------
+  payment-service:
+    build: ./payment-service
+    image: inventory-payment-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./payment-service/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      ORDER_SERVICE_URL: http://order-service:8005
+      FRONTEND_URL: http://localhost:5173
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./payment-service/payments.db:/app/payments.db
+    depends_on:
+      - auth-service
+      - order-service
+
+  # -------------------------
+  # NOTIFICATION SERVICE
+  # -------------------------
+  notification-service:
+    build: ./notification-service
+    image: inventory-notification-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./notification-service/.env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./notification-service/notification.db:/app/notification.db
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # Separate background worker using the Notification Service image
+  notification-worker:
+    image: inventory-notification-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./notification-service/.env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - ./notification-service/notification.db:/app/notification.db
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      notification-service:
+        condition: service_started
+
+  # -------------------------
+  # REVIEW SERVICE
+  # -------------------------
+  review-service:
+    build: ./review-service
+    image: inventory-review-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./review-service/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      PRODUCT_SERVICE_URL: http://product-service:8002
+      ORDER_SERVICE_URL: http://order-service:8005
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./review-service/review.db:/app/review.db
+    depends_on:
+      - auth-service
+      - product-service
+      - order-service
+
+  # -------------------------
+  # RETURN SERVICE
+  # -------------------------
+  return-service:
+    build: ./return-service
+    image: inventory-return-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./return-service/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      ORDER_SERVICE_URL: http://order-service:8005
+      PAYMENT_SERVICE_URL: http://payment-service:8006
+    ports:
+      - "8009:8009"
+    volumes:
+      - ./return-service/returns.db:/app/returns.db
+    depends_on:
+      - auth-service
+      - order-service
+      - payment-service
+
+  # -------------------------
+  # ANALYTICS SERVICE
+  # -------------------------
+  analytics-service:
+    build: ./analytics-service
+    image: inventory-analytics-service:latest
+    restart: unless-stopped
+    env_file:
+      - ./analytics-service/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      PRODUCT_SERVICE_URL: http://product-service:8002
+      INVENTORY_SERVICE_URL: http://inventory-service:8003
+      ORDER_SERVICE_URL: http://order-service:8005
+      PAYMENT_SERVICE_URL: http://payment-service:8006
+      RETURN_SERVICE_URL: http://return-service:8009
+    ports:
+      - "8010:8010"
+    depends_on:
+      - auth-service
+      - product-service
+      - inventory-service
+      - order-service
+      - payment-service
+      - return-service
+
+  # -------------------------
+  # API GATEWAY
+  # -------------------------
+  api-gateway:
+    build: ./api-gateway
+    image: inventory-api-gateway:latest
+    restart: unless-stopped
+    env_file:
+      - ./api-gateway/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      PRODUCT_SERVICE_URL: http://product-service:8002
+      INVENTORY_SERVICE_URL: http://inventory-service:8003
+      CART_SERVICE_URL: http://cart-service:8004
+      ORDER_SERVICE_URL: http://order-service:8005
+      PAYMENT_SERVICE_URL: http://payment-service:8006
+      NOTIFICATION_SERVICE_URL: http://notification-service:8007
+      REVIEW_SERVICE_URL: http://review-service:8008
+      RETURN_SERVICE_URL: http://return-service:8009
+      ANALYTICS_SERVICE_URL: http://analytics-service:8010
+    ports:
+      - "8000:8000"
+    depends_on:
+      - auth-service
+      - product-service
+      - inventory-service
+      - cart-service
+      - order-service
+      - payment-service
+      - notification-service
+      - review-service
+      - return-service
+      - analytics-service
+
+  # -------------------------
+  # REACT FRONTEND
+  # -------------------------
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    image: inventory-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - api-gateway
+
+volumes:
+  rabbitmq_data:

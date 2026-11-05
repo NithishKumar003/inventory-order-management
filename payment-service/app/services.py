@@ -1,11 +1,12 @@
 from decimal import Decimal
 from uuid import uuid4
+from sqlalchemy import func
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Payment, PaymentStatus
-from app.schemas import PaymentCreate
+from app.models import Payment, PaymentStatus, Refund, RefundStatus
+from app.schemas import PaymentCreate, RefundCreate
 
 import httpx
 from app.auth import ORDER_SERVICE_URL
@@ -249,3 +250,163 @@ def create_pending_stripe_payment(
         )
 
     return payment
+
+def create_refund(
+    refund_data: RefundCreate,
+    payment_id: int,
+    user_id: int,
+    db: Session,
+) -> Refund:
+    # Check whether this idempotency key was already used.
+    existing_refund = (
+        db.query(Refund)
+        .filter(
+            Refund.user_id == user_id,
+            Refund.idempotency_key == refund_data.idempotency_key,
+        )
+        .first()
+    )
+
+    if existing_refund:
+        same_request = (
+            existing_refund.payment_id == payment_id
+            and existing_refund.amount == refund_data.amount
+            and existing_refund.reason == refund_data.reason
+        )
+
+        if not same_request:
+            raise ValueError(
+                "This refund idempotency key was already used "
+                "for a different request."
+            )
+
+        return existing_refund
+
+    # Find a payment belonging to this customer.
+    payment = (
+        db.query(Payment)
+        .filter(
+            Payment.id == payment_id,
+            Payment.user_id == user_id,
+        )
+        .first()
+    )
+
+    if payment is None:
+        raise LookupError("Payment not found.")
+
+    if payment.status != PaymentStatus.SUCCESS:
+        raise ValueError(
+            "Only successful payments can be refunded."
+        )
+
+    # Include pending refunds to reserve their amounts.
+    already_refunded = (
+        db.query(func.coalesce(func.sum(Refund.amount), 0))
+        .filter(
+            Refund.payment_id == payment_id,
+            Refund.status.in_([
+                RefundStatus.PENDING,
+                RefundStatus.SUCCEEDED,
+            ]),
+        )
+        .scalar()
+    )
+    remaining_amount = payment.amount - Decimal(str(already_refunded))
+
+    if refund_data.amount > remaining_amount:
+        raise ValueError(
+            f"Refund exceeds the remaining refundable amount "
+            f"of {remaining_amount}."
+        )
+
+    # Create the refund record before contacting the provider.
+    refund = Refund(
+        payment_id=payment.id,
+        user_id=user_id,
+        amount=refund_data.amount,
+        reason=refund_data.reason,
+        idempotency_key=refund_data.idempotency_key,
+        status=RefundStatus.PENDING,
+    )
+
+    db.add(refund)
+
+    try:
+        db.commit()
+        db.refresh(refund)
+    except IntegrityError:
+        db.rollback()
+
+        existing_refund = (
+            db.query(Refund)
+            .filter(
+                Refund.user_id == user_id,
+                Refund.idempotency_key == refund_data.idempotency_key,
+            )
+            .first()
+        )
+
+        if existing_refund:
+            if (
+                existing_refund.payment_id == payment_id
+                and existing_refund.amount == refund_data.amount
+                and existing_refund.reason == refund_data.reason
+            ):
+                return existing_refund
+
+            raise ValueError(
+                "This refund idempotency key was already used "
+                "for a different request."
+            )
+
+        raise
+
+    # Stripe-backed payments must be refunded through Stripe.
+    if payment.stripe_session_id:
+        if not payment.stripe_payment_intent_id:
+            refund.status = RefundStatus.FAILED
+            refund.failure_reason = (
+                "Stripe PaymentIntent is not available for this payment."
+            )
+            db.commit()
+            db.refresh(refund)
+            return refund
+
+        try:
+            from app.stripe_service import create_stripe_refund
+
+            stripe_refund = create_stripe_refund(
+                payment_intent_id=payment.stripe_payment_intent_id,
+                amount_minor=int(refund.amount * 100),
+                idempotency_key=refund.idempotency_key,
+            )
+
+            refund.provider_reference = stripe_refund.id
+
+            if stripe_refund.status == "succeeded":
+                refund.status = RefundStatus.SUCCEEDED
+            else:
+                refund.status = RefundStatus.PENDING
+
+        except Exception:
+            db.rollback()
+
+            refund = db.query(Refund).filter(
+                Refund.id == refund.id
+            ).first()
+
+            refund.status = RefundStatus.FAILED
+            refund.failure_reason = "Stripe refund request failed."
+
+    else:
+        # Simulated payments are refunded locally.
+        refund.status = RefundStatus.SUCCEEDED
+        refund.provider_reference = (
+            f"SIM-REFUND-{refund.id}"
+        )
+
+    db.commit()
+    db.refresh(refund)
+
+    return refund

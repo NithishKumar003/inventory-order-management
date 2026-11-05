@@ -360,6 +360,75 @@ def test_order_details_returns_existing_customer_order(
     assert response.json()["id"] == order_id
     assert response.json()["user_id"] == 700001
 
+def test_order_tracking_returns_customer_status_history(
+    mock_services,
+):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [{"product_id": 700101, "quantity": 1}],
+            "idempotency_key": "tracking-order-key-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    response = client.get(
+        f"/orders/{order_id}/tracking"
+    )
+
+    assert response.status_code == 200
+
+    history = response.json()
+
+    assert len(history) == 1
+    assert history[0]["status"] == "Confirmed"
+    assert history[0]["note"] == (
+        "Your order has been confirmed successfully."
+    )
+    assert history[0]["created_at"] is not None
+    
+def test_order_tracking_hides_another_customers_order(
+    mock_services,
+):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [{"product_id": 700101, "quantity": 1}],
+            "idempotency_key": "tracking-private-order-002",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    def another_customer():
+        return {
+            "id": 700002,
+            "email": "another-customer@example.com",
+            "role": "customer",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = another_customer
+
+    response = client.get(
+        f"/orders/{order_id}/tracking"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Order not found."
+    
+def test_order_tracking_returns_404_for_missing_order():
+    response = client.get(
+        "/orders/999999/tracking"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Order not found."
 
 def test_order_details_hides_another_customers_order(
     mock_services,
@@ -1184,3 +1253,253 @@ def test_full_order_cancellation_rejects_invalid_input(
 
     assert response.status_code == 422
     assert mock_services["released_reservations"] == []
+
+def test_customer_cannot_update_order_status(mock_services):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [
+                {"product_id": 700101, "quantity": 1},
+            ],
+            "idempotency_key": "status-customer-test-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={
+            "status": "Processing",
+            "note": "Order processing started",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Only admins can update order status."
+    )
+    
+def test_admin_can_update_order_status(mock_services):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [
+                {"product_id": 700101, "quantity": 1},
+            ],
+            "idempotency_key": "status-admin-test-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    def override_admin_user():
+        return {
+            "id": 700003,
+            "email": "admin@example.com",
+            "role": "admin",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = override_admin_user
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={
+            "status": "Processing",
+            "note": "Order processing started",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["status"] == "Processing"
+    assert data["status_history"][-1]["status"] == "Processing"
+    assert data["status_history"][-1]["note"] == (
+        "Order processing started"
+    )
+    
+def test_admin_cannot_skip_order_status(mock_services):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [
+                {"product_id": 700101, "quantity": 1},
+            ],
+            "idempotency_key": "status-skip-test-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    def override_admin_user():
+        return {
+            "id": 700003,
+            "email": "admin@example.com",
+            "role": "admin",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = override_admin_user
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={
+            "status": "Delivered",
+            "note": "Trying to skip stages",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Cannot change order status from Confirmed to Delivered."
+    )
+    
+def test_tracking_shows_admin_status_updates(mock_services):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [
+                {"product_id": 700101, "quantity": 1},
+            ],
+            "idempotency_key": "tracking-update-test-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order_id = create_response.json()["id"]
+
+    def override_admin_user():
+        return {
+            "id": 700003,
+            "email": "admin@example.com",
+            "role": "admin",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = override_admin_user
+
+    update_response = client.patch(
+        f"/orders/{order_id}/status",
+        json={
+            "status": "Processing",
+            "note": "Order processing started",
+        },
+    )
+
+    assert update_response.status_code == 200
+
+    def override_customer_user():
+        return {
+            "id": 700001,
+            "email": "order-test@example.com",
+            "role": "customer",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = override_customer_user
+
+    tracking_response = client.get(
+        f"/orders/{order_id}/tracking"
+    )
+
+    assert tracking_response.status_code == 200
+
+    history = tracking_response.json()
+
+    assert len(history) == 2
+    assert history[0]["status"] == "Confirmed"
+    assert history[1]["status"] == "Processing"
+    assert history[1]["note"] == "Order processing started"
+    
+def test_full_cancellation_is_recorded_in_tracking_history(
+    mock_services,
+):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [{"product_id": 700101, "quantity": 2}],
+            "idempotency_key": "cancel-history-order-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    order = create_response.json()
+
+    cancellation_reason = "Customer changed mind"
+
+    cancel_response = client.post(
+        f"/orders/{order['id']}/cancel",
+        json={
+            "cancellation_key": "cancel-history-key-001",
+            "reason": cancellation_reason,
+        },
+    )
+
+    assert cancel_response.status_code == 200
+
+    history = cancel_response.json()["status_history"]
+
+    assert history[-1]["status"] == "Cancelled"
+    assert history[-1]["note"] == (
+        f"Order cancelled: {cancellation_reason}"
+    )
+    
+def test_admin_can_view_all_orders(mock_services):
+    create_response = client.post(
+        "/orders",
+        json={
+            "items": [{"product_id": 700101, "quantity": 2}],
+            "idempotency_key": "admin-all-orders-test-001",
+            "shipping_address": "10 Test Street, Test City",
+        },
+    )
+
+    assert create_response.status_code == 201
+    created_order = create_response.json()
+
+    def override_admin_user():
+        return {
+            "id": 700003,
+            "email": "admin@example.com",
+            "role": "admin",
+            "is_active": True,
+        }
+
+    app.dependency_overrides[get_current_user] = override_admin_user
+
+    response = client.get("/orders/admin/all")
+
+    assert response.status_code == 200
+
+    orders = response.json()
+    assert len(orders) == 1
+    assert orders[0]["id"] == created_order["id"]
+    assert orders[0]["user_id"] == 700001
+    assert len(orders[0]["items"]) == 1
+    assert len(orders[0]["status_history"]) >= 1
+
+
+def test_customer_cannot_view_all_orders():
+    response = client.get("/orders/admin/all")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Administrator access required."
+
+
+def test_unauthenticated_user_cannot_view_all_orders():
+    app.dependency_overrides.pop(get_current_user, None)
+
+    response = client.get("/orders/admin/all")
+
+    assert response.status_code in (401, 403)

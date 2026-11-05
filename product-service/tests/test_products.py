@@ -1,4 +1,7 @@
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from fastapi.testclient import TestClient
@@ -8,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.main import app, get_db
+from app.auth import get_current_user
 
 
 # Use a separate in-memory database for all tests.
@@ -26,8 +30,10 @@ TestingSessionLocal = sessionmaker(
 
 @pytest.fixture
 def client():
+    # Create tables in the separate test database.
     Base.metadata.create_all(bind=test_engine)
 
+    # Connect API requests to the test database.
     def override_get_db():
         db = TestingSessionLocal()
         try:
@@ -35,14 +41,22 @@ def client():
         finally:
             db.close()
 
+    # Mock an authenticated admin user.
     app.dependency_overrides[get_db] = override_get_db
 
-    with TestClient(app) as test_client:
-        yield test_client
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": 1,
+        "email": "admin@test.com",
+        "role": "admin",
+        "is_active": True,
+    }
 
-    app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=test_engine)
-
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+        Base.metadata.drop_all(bind=test_engine)
 
 def make_product(
     name="Wireless Mouse",
@@ -515,3 +529,107 @@ def test_inventory_timeout_returns_503(client, monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Inventory Service timed out."
+
+# 28. Admin can view active and inactive products
+def test_admin_list_all_products(client):
+    active_product = create_product(client)
+
+    inactive_product = create_product(
+        client,
+        name="Old Keyboard",
+        sku="TEST-OLD-KEYBOARD",
+    )
+
+    delete_response = client.delete(
+        f"/products/{inactive_product['id']}"
+    )
+    assert delete_response.status_code == 200
+
+    response = client.get("/products/admin/all")
+
+    assert response.status_code == 200
+
+    products = response.json()
+
+    assert len(products) == 2
+
+    product_status = {
+        product["id"]: product["is_active"]
+        for product in products
+    }
+
+    assert product_status[active_product["id"]] is True
+    assert product_status[inactive_product["id"]] is False
+
+
+# 29. Admin can filter active products
+def test_admin_list_active_products(client):
+    create_product(client)
+
+    inactive_product = create_product(
+        client,
+        name="Old Keyboard",
+        sku="TEST-OLD-KEYBOARD",
+    )
+
+    client.delete(f"/products/{inactive_product['id']}")
+
+    response = client.get(
+        "/products/admin/all",
+        params={"is_active": "true"},
+    )
+
+    assert response.status_code == 200
+
+    products = response.json()
+
+    assert len(products) == 1
+    assert all(product["is_active"] is True for product in products)
+
+
+# 30. Admin can filter inactive products
+def test_admin_list_inactive_products(client):
+    create_product(client)
+
+    inactive_product = create_product(
+        client,
+        name="Old Keyboard",
+        sku="TEST-OLD-KEYBOARD",
+    )
+
+    client.delete(f"/products/{inactive_product['id']}")
+
+    response = client.get(
+        "/products/admin/all",
+        params={"is_active": "false"},
+    )
+
+    assert response.status_code == 200
+
+    products = response.json()
+
+    assert len(products) == 1
+    assert products[0]["id"] == inactive_product["id"]
+    assert products[0]["is_active"] is False
+
+# 31. Admin product list supports pagination
+def test_admin_product_pagination(client):
+    create_product(client)
+    create_product(
+        client,
+        name="USB Keyboard",
+        sku="TEST-KEYBOARD-001",
+    )
+    create_product(
+        client,
+        name="Office Chair",
+        sku="TEST-CHAIR-001",
+    )
+
+    response = client.get(
+        "/products/admin/all",
+        params={"skip": 1, "limit": 1},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1

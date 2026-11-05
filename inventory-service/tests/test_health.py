@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.main import app, get_db
 from app.models import Inventory, StockMovement
+from app.auth import require_inventory_manager
 
 
 test_engine = create_engine(
@@ -39,6 +40,12 @@ def setup_test_database():
 
     app.dependency_overrides[get_db] = override_get_db
 
+    app.dependency_overrides[require_inventory_manager] = lambda: {
+        "id": 1,
+        "email": "admin@test.com",
+        "role": "admin",
+        "is_active": True,
+    }
     yield
 
     app.dependency_overrides.clear()
@@ -615,7 +622,7 @@ def test_create_inventory_when_product_does_not_exist(mock_get):
 
     assert response.status_code == 404
     assert response.json()["detail"] == (
-        "Product does not exists."
+        "Product does not exist."
     )
 
     inventory_response = client.get(

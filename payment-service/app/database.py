@@ -38,3 +38,26 @@ def get_db():
         yield db
     finally:
         db.close()
+        
+def migrate_payment_database():
+    """Safely add new columns to an existing payment database."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+
+    if "payments" not in inspector.get_table_names():
+        return
+
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("payments")
+    }
+
+    if "stripe_payment_intent_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE payments "
+                    "ADD COLUMN stripe_payment_intent_id VARCHAR(255)"
+                )
+            )

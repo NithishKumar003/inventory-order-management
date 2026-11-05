@@ -1,4 +1,3 @@
-
 import os
 
 import httpx
@@ -7,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Product
+from app.auth import require_admin
 from app.schemas import ProductCreate, ProductResponse, ProductUpdate
 
 
@@ -76,7 +76,10 @@ def health_check():
     }
 
 
-@app.get("/products", response_model=list[ProductResponse])
+@app.get(
+    "/products",
+    response_model=list[ProductResponse],
+)
 def list_products(
     search: str | None = Query(default=None, min_length=1),
     category: str | None = Query(default=None, min_length=1),
@@ -170,7 +173,10 @@ def list_products(
     return matching_products[skip : skip + limit]
 
 
-@app.get("/products/{product_id}", response_model=ProductResponse)
+@app.get(
+    "/products/{product_id}",
+    response_model=ProductResponse,
+)
 def get_product(
     product_id: int,
     db: Session = Depends(get_db),
@@ -197,6 +203,7 @@ def get_product(
     "/products",
     response_model=ProductResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
 )
 def create_product(
     product_data: ProductCreate,
@@ -231,8 +238,36 @@ def create_product(
 
     return new_product
 
+@app.get(
+    "/products/admin/all",
+    response_model=list[ProductResponse],
+    dependencies=[Depends(require_admin)],
+)
+def list_all_products_for_admin(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    is_active: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Product)
 
-@app.put("/products/{product_id}", response_model=ProductResponse)
+    if is_active is not None:
+        query = query.filter(Product.is_active.is_(is_active))
+
+    return (
+        query
+        .order_by(Product.id.asc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+@app.put(
+    "/products/{product_id}",
+    response_model=ProductResponse,
+    dependencies=[Depends(require_admin)],
+)
 def update_product(
     product_id: int,
     product_data: ProductUpdate,
@@ -277,7 +312,10 @@ def update_product(
     return product
 
 
-@app.delete("/products/{product_id}")
+@app.delete(
+    "/products/{product_id}",
+    dependencies=[Depends(require_admin)],
+)
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),

@@ -14,7 +14,7 @@ class InventoryResponse(BaseModel):
     quantity: int
     updated_at: datetime | None
 
-    model_config = ConfigDict(form_attributes=True)
+    model_config = ConfigDict(fromm_attributes=True)
 
 class StockMovementCreate(BaseModel):
     product_id: int = Field(gt=0)

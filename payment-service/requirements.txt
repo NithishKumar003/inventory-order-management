@@ -6,5 +6,4 @@ httpx
 python-dotenv
 PyJWT
 pytest
-
 stripe
