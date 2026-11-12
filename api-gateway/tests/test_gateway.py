@@ -18,6 +18,29 @@ def gateway(monkeypatch):
     """Test the gateway with fake downstream services."""
     captured = {}
 
+    class FakeRedis:
+        def __init__(self):
+            self.counts = {}
+            self.cache = {}
+
+        async def eval(self, script, numkeys, key, window):
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return self.counts[key]
+
+        async def get(self, key):
+            return self.cache.get(key)
+
+        async def setex(self, key, ttl, value):
+            self.cache[key] = value
+
+        async def scan_iter(self, match=None):
+            for key in list(self.cache.keys()):
+                if match is None or key.startswith("product_cache:"):
+                    yield key
+
+        async def delete(self, key):
+            self.cache.pop(key, None)
+
     service_urls = {
         "AUTH_SERVICE_URL": "http://auth.test",
         "PRODUCT_SERVICE_URL": "http://product.test",
@@ -35,6 +58,7 @@ def gateway(monkeypatch):
 
     def handler(request):
         captured["method"] = request.method
+        captured["calls"] = captured.get("calls", 0) + 1
         captured["url"] = str(request.url)
         captured["path"] = request.url.path
         captured["query"] = list(request.url.params.multi_items())
@@ -52,6 +76,7 @@ def gateway(monkeypatch):
 
     client = TestClient(main.app)
     main.app.state.http_client = upstream_client
+    main.app.state.redis = FakeRedis()
 
     yield client, captured
 
@@ -413,3 +438,115 @@ def test_downstream_error_status_is_preserved(gateway, monkeypatch):
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Product not found"}
+
+def test_rate_limit_blocks_excess_requests(gateway, monkeypatch):
+    client, _ = gateway
+
+    monkeypatch.setattr(main, "REDIS_RATE_LIMIT", 2)
+
+    first = client.get("/products")
+    second = client.get("/products")
+    third = client.get("/products")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert third.json()["detail"] == (
+        "Rate limit exceeded. Try again later."
+    )
+
+
+def test_health_check_does_not_consume_rate_limit(gateway, monkeypatch):
+    client, _ = gateway
+
+    monkeypatch.setattr(main, "REDIS_RATE_LIMIT", 1)
+
+    health = client.get("/health")
+    product = client.get("/products")
+
+    assert health.status_code == 200
+    assert product.status_code == 200
+
+def test_rate_limit_returns_503_when_redis_fails(gateway):
+    client, _ = gateway
+
+    class BrokenRedis:
+        async def eval(self, *args):
+            raise main.RedisError("Redis unavailable")
+
+    main.app.state.redis = BrokenRedis()
+
+    response = client.get("/products")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Rate limiting service is unavailable."
+    )
+
+def test_product_response_is_cached(gateway):
+    client, captured = gateway
+
+    first = client.get("/products")
+    second = client.get("/products")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    # Product Service should only be called once.
+    assert captured["calls"] == 1
+
+    assert second.json() == first.json()
+
+def test_product_cache_uses_different_query_parameters(gateway):
+    client, captured = gateway
+
+    first = client.get("/products?category=electronics")
+    second = client.get("/products?category=clothing")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    # Different query parameters must call Product Service separately.
+    assert captured["calls"] == 2
+
+def test_product_cache_uses_query_parameters(gateway):
+    client, captured = gateway
+
+    first = client.get("/products?search=mouse")
+    second = client.get("/products?search=mouse")
+    third = client.get("/products?search=keyboard")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+
+    # Same query uses cache; different query calls Product Service.
+    assert captured["calls"] == 2
+
+def test_authenticated_product_requests_bypass_cache(gateway):
+    client, captured = gateway
+
+    headers = {"Authorization": "Bearer test-token"}
+
+    first = client.get("/products", headers=headers)
+    second = client.get("/products", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    # Both authenticated requests must reach Product Service.
+    assert captured["calls"] == 2
+
+def test_admin_product_requests_bypass_cache(gateway):
+    client, captured = gateway
+
+    headers = {"Authorization": "Bearer admin-test-token"}
+
+    first = client.get("/products/admin/all", headers=headers)
+    second = client.get("/products/admin/all", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    # Both admin requests must reach Product Service.
+    assert captured["calls"] == 2

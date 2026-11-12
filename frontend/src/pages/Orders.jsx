@@ -249,6 +249,11 @@ export default function Orders({ isAdmin = false }) {
   }
 
   function openOrder(orderId) {
+    if (isAdmin) {
+      navigate(`/admin/orders/${orderId}`);
+      return;
+    }
+
     navigate(`/orders/${orderId}`);
   }
 

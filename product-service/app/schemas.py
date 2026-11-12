@@ -41,3 +41,9 @@ class ProductResponse(BaseModel):
     created_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
+    
+class PaginatedProductsResponse(BaseModel):
+    items: list[ProductResponse]
+    total: int
+    skip: int
+    limit: int

@@ -63,3 +63,9 @@ class StockReservationPartialRelease(BaseModel):
     release_key: str = Field(min_length=8, max_length=150)
     quantity: int = Field(gt=0)
     reason: str = Field(min_length=3, max_length=200)
+
+class InventorySettingsUpdate(BaseModel):
+    low_stock_threshold: int = Field(ge=0, le=100000)
+
+class InventorySettingsResponse(BaseModel):
+    low_stock_threshold: int

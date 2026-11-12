@@ -29,7 +29,7 @@ function formatDate(value) {
   });
 }
 
-function StockBadge({ quantity }) {
+function StockBadge({ quantity, threshold }) {
   const value = Number(quantity) || 0;
 
   if (value === 0) {
@@ -41,7 +41,7 @@ function StockBadge({ quantity }) {
     );
   }
 
-  if (value <= 10) {
+  if (value <= threshold) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
         <AlertTriangle size={13} />
@@ -101,6 +101,7 @@ export default function Inventory() {
   const [inventory, setInventory] = useState([]);
   const [lowStock, setLowStock] = useState([]);
   const [products, setProducts] = useState([]);
+  const [lowStockThreshold, setLowStockThreshold] = useState(10);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -123,11 +124,17 @@ export default function Inventory() {
         inventoryResponse,
         lowStockResponse,
         productsResponse,
+        settingsResponse,
       ] = await Promise.all([
         api.get('/inventory'),
         api.get('/inventory/low-stock'),
-        api.get('/products'),
+        api.get('/products/admin/all?is_active=true'),
+        api.get('/inventory/settings'),
       ]);
+
+      setLowStockThreshold(
+        Number(settingsResponse.data.low_stock_threshold)
+      );
 
       setInventory(
         Array.isArray(inventoryResponse.data)
@@ -249,16 +256,16 @@ export default function Inventory() {
 
       if (stockFilter === 'low') {
         matchesFilter =
-          quantityValue > 0 && quantityValue <= 10;
+          quantityValue > 0 && quantityValue <= lowStockThreshold;
       } else if (stockFilter === 'out') {
         matchesFilter = quantityValue === 0;
       } else if (stockFilter === 'available') {
-        matchesFilter = quantityValue > 10;
+        matchesFilter = quantityValue > lowStockThreshold;
       }
 
       return matchesSearch && matchesFilter;
     });
-  }, [inventory, search, stockFilter]);
+  }, [inventory, search, stockFilter, lowStockThreshold]);
 
   return (
     <section className="min-h-screen space-y-7 p-4 md:p-7">
@@ -457,7 +464,7 @@ export default function Inventory() {
         <StatCard
           title="Low stock"
           value={loading ? '—' : lowStock.length.toLocaleString('en-IN')}
-          description="Products at or below 10 units"
+          description={`Products at or below ${lowStockThreshold} units`}
           icon={TrendingDown}
           color="amber"
         />
@@ -598,7 +605,10 @@ export default function Inventory() {
                         </td>
 
                         <td className="px-6 py-4">
-                          <StockBadge quantity={item.quantity} />
+                          <StockBadge
+                            quantity={item.quantity}
+                            threshold={lowStockThreshold}
+                          />
                         </td>
 
                         <td className="px-6 py-4 text-slate-500">
@@ -625,7 +635,10 @@ export default function Inventory() {
                         Product #{item.product_id}
                       </span>
 
-                      <StockBadge quantity={item.quantity} />
+                      <StockBadge
+                        quantity={item.quantity}
+                        threshold={lowStockThreshold}
+                      />
                     </div>
 
                     <div className="mt-4 flex items-end justify-between">

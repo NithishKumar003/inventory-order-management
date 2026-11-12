@@ -4,6 +4,7 @@ import sys
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -52,11 +53,19 @@ def override_get_current_user():
 
 @pytest.fixture(autouse=True)
 def setup_test_database():
+    app.dependency_overrides.pop(order_main.bearer_scheme, None)
     Base.metadata.create_all(bind=test_engine)
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user] = (
         override_get_current_user
+    )
+
+    app.dependency_overrides[order_main.bearer_scheme] = (
+        lambda: HTTPAuthorizationCredentials(
+            scheme="Bearer",
+            credentials="test-order-token",
+        )
     )
 
     yield
@@ -389,7 +398,7 @@ def test_order_tracking_returns_customer_status_history(
         "Your order has been confirmed successfully."
     )
     assert history[0]["created_at"] is not None
-    
+
 def test_order_tracking_hides_another_customers_order(
     mock_services,
 ):
@@ -421,7 +430,7 @@ def test_order_tracking_hides_another_customers_order(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Order not found."
-    
+
 def test_order_tracking_returns_404_for_missing_order():
     response = client.get(
         "/orders/999999/tracking"
@@ -1281,7 +1290,7 @@ def test_customer_cannot_update_order_status(mock_services):
     assert response.json()["detail"] == (
         "Only admins can update order status."
     )
-    
+
 def test_admin_can_update_order_status(mock_services):
     create_response = client.post(
         "/orders",
@@ -1324,7 +1333,7 @@ def test_admin_can_update_order_status(mock_services):
     assert data["status_history"][-1]["note"] == (
         "Order processing started"
     )
-    
+
 def test_admin_cannot_skip_order_status(mock_services):
     create_response = client.post(
         "/orders",
@@ -1362,7 +1371,7 @@ def test_admin_cannot_skip_order_status(mock_services):
     assert response.json()["detail"] == (
         "Cannot change order status from Confirmed to Delivered."
     )
-    
+
 def test_tracking_shows_admin_status_updates(mock_services):
     create_response = client.post(
         "/orders",
@@ -1420,7 +1429,7 @@ def test_tracking_shows_admin_status_updates(mock_services):
     assert history[0]["status"] == "Confirmed"
     assert history[1]["status"] == "Processing"
     assert history[1]["note"] == "Order processing started"
-    
+
 def test_full_cancellation_is_recorded_in_tracking_history(
     mock_services,
 ):
@@ -1454,7 +1463,7 @@ def test_full_cancellation_is_recorded_in_tracking_history(
     assert history[-1]["note"] == (
         f"Order cancelled: {cancellation_reason}"
     )
-    
+
 def test_admin_can_view_all_orders(mock_services):
     create_response = client.post(
         "/orders",

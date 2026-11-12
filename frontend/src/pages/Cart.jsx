@@ -61,7 +61,11 @@ export default function Cart() {
   const [shippingAddress, setShippingAddress] = useState('');
   const [couponCode, setCouponCode] = useState('');
   const [validated, setValidated] = useState(false);
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponLoading, setCouponLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [paymentReview, setPaymentReview] = useState(null);
+  const [paymentRedirectLoading, setPaymentRedirectLoading] = useState(false);
   const [validationLoading, setValidationLoading] = useState(false);
   const [itemLoading, setItemLoading] = useState([]);
   const [clearLoading, setClearLoading] = useState(false);
@@ -174,6 +178,53 @@ export default function Cart() {
     }
   }
 
+  async function applyCoupon() {
+    if (couponLoading || checkoutLoading) return;
+
+    const code = couponCode.trim().toUpperCase();
+
+    if (!code) {
+      setError('Please enter a coupon code.');
+      return;
+    }
+
+    if (!cart.items.length) {
+      setError('Your cart is empty.');
+      return;
+    }
+
+    setCouponLoading(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const response = await api.post('/coupons/validate', {
+        code,
+        subtotal: Number(cart.total_amount),
+      });
+
+      setAppliedCoupon(response.data);
+      setCouponCode(response.data.code);
+      setValidated(false);
+      setMessage('Coupon applied successfully!');
+    } catch (error) {
+      setAppliedCoupon(null);
+      setError(
+        error.response?.data?.detail || 'Unable to apply coupon.'
+      );
+    } finally {
+      setCouponLoading(false);
+    }
+  }
+
+  function removeCoupon() {
+    setCouponCode('');
+    setAppliedCoupon(null);
+    setValidated(false);
+    setError('');
+    setMessage('Coupon removed.');
+  }
+
   async function validateCart() {
     if (validationLoading || checkoutLoading) return;
 
@@ -220,6 +271,20 @@ export default function Cart() {
     }
   }
 
+  async function proceedToPayment() {
+    if (!paymentReview || paymentRedirectLoading) return;
+
+    setPaymentRedirectLoading(true);
+    setError('');
+
+    try {
+      window.location.assign(paymentReview.checkoutUrl);
+    } catch (err) {
+      setError('Unable to open the secure payment page.');
+      setPaymentRedirectLoading(false);
+    }
+  }
+
   async function placeOrder() {
     if (checkoutLoading) return;
 
@@ -241,6 +306,21 @@ export default function Cart() {
       return;
     }
 
+    if (couponCode.trim() && !appliedCoupon) {
+      setError('Please apply your coupon before proceeding.');
+      return;
+    }
+
+    if (
+      appliedCoupon &&
+      Number(appliedCoupon.subtotal) !== Number(cart.total_amount)
+    ) {
+      setAppliedCoupon(null);
+      setValidated(false);
+      setError('Cart changed. Please apply your coupon again and validate your cart.');
+      return;
+    }
+
     setCheckoutLoading(true);
 
     let createdOrder = null;
@@ -256,7 +336,7 @@ export default function Cart() {
         items: orderItems,
         idempotency_key: crypto.randomUUID(),
         shipping_address: shippingAddress.trim(),
-        coupon_code: couponCode.trim() || null,
+        coupon_code: appliedCoupon?.code || null,
       });
 
       createdOrder = orderResponse.data;
@@ -305,7 +385,10 @@ export default function Cart() {
       }
 
       // Step 4: Redirect to Stripe-hosted Checkout.
-      window.location.assign(checkoutUrl);
+      setPaymentReview({
+        order: createdOrder,
+        checkoutUrl,
+      });
     } catch (err) {
       console.error('Stripe checkout error:', err);
 
@@ -582,6 +665,7 @@ export default function Cart() {
                 value={couponCode}
                 onChange={(event) => {
                   setCouponCode(event.target.value.toUpperCase());
+                  setAppliedCoupon(null);
                   setValidated(false);
                   setError('');
                   setMessage('');
@@ -592,9 +676,33 @@ export default function Cart() {
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm uppercase outline-none transition placeholder:normal-case placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
               />
 
-              <p className="mt-1 text-xs text-slate-400">
-                Coupon validity and discount are checked during checkout.
-              </p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={applyCoupon}
+                  disabled={couponLoading || checkoutLoading || !couponCode.trim()}
+                  className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {couponLoading ? 'Applying...' : 'Apply Coupon'}
+                </button>
+
+                {appliedCoupon && (
+                  <button
+                    type="button"
+                    onClick={removeCoupon}
+                    disabled={checkoutLoading}
+                    className="rounded-xl border border-red-200 px-4 py-2.5 text-sm font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+
+              {appliedCoupon && (
+                <p className="mt-2 text-xs font-semibold text-green-600">
+                  Coupon {appliedCoupon.code} applied successfully!
+                </p>
+              )}
             </div>
 
             <div className="mt-6">
@@ -636,16 +744,41 @@ export default function Cart() {
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">Subtotal</span>
                 <span className="font-semibold text-slate-800">
-                  {formatPrice(cart.total_amount)}
+                  {formatPrice(appliedCoupon?.subtotal ?? cart.total_amount)}
                 </span>
               </div>
 
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">Shipping</span>
-                <span className="font-semibold text-green-600">
-                  Calculated at checkout
-                </span>
-              </div>
+              {appliedCoupon ? (
+                <>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Tax</span>
+                    <span className="font-semibold text-slate-800">
+                      {formatPrice(appliedCoupon.tax_amount)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Coupon discount</span>
+                    <span className="font-semibold text-green-600">
+                      -{formatPrice(appliedCoupon.discount_amount)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Shipping</span>
+                    <span className="font-semibold text-slate-800">
+                      {formatPrice(appliedCoupon.shipping_amount)}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Shipping</span>
+                  <span className="font-semibold text-green-600">
+                    Calculated at checkout
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between py-5">
@@ -653,7 +786,7 @@ export default function Cart() {
                 Cart Total
               </span>
               <span className="text-2xl font-extrabold text-blue-700">
-                {formatPrice(cart.total_amount)}
+                {formatPrice(appliedCoupon?.total_amount ?? cart.total_amount)}
               </span>
             </div>
 
@@ -715,6 +848,120 @@ export default function Cart() {
               by our payment server after Stripe verifies it.
             </p>
           </aside>
+        </div>
+
+      )}
+
+      {paymentReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4">
+          <div className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl sm:p-8">
+            <div className="mb-6 flex items-center gap-3">
+              <div className="rounded-xl bg-blue-100 p-3 text-blue-700">
+                <CreditCard size={24} />
+              </div>
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-900">
+                  Review Your Payment
+                </h2>
+                <p className="text-sm text-slate-500">
+                  Order #{paymentReview.order.id}
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-6 rounded-xl border border-slate-200 p-4">
+              <h3 className="mb-3 font-bold text-slate-800">
+                Order Items
+              </h3>
+
+              <div className="space-y-3">
+                {paymentReview.order.items?.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-4 text-sm"
+                  >
+                    <div>
+                      <p className="font-semibold text-slate-800">
+                        {item.product_name}
+                      </p>
+                      <p className="text-slate-500">
+                        {formatPrice(item.unit_price)} × {item.quantity}
+                      </p>
+                    </div>
+                    <span className="font-bold text-slate-800">
+                      {formatPrice(item.line_subtotal)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3 border-b border-slate-200 pb-5">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Subtotal</span>
+                <span className="font-semibold text-slate-800">
+                  {formatPrice(paymentReview.order.subtotal)}
+                </span>
+              </div>
+
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Tax</span>
+                <span className="font-semibold text-slate-800">
+                  {formatPrice(paymentReview.order.tax_amount)}
+                </span>
+              </div>
+
+              {Number(paymentReview.order.discount_amount) > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">
+                    Coupon discount
+                    {paymentReview.order.coupon_code
+                      ? ` (${paymentReview.order.coupon_code})`
+                      : ''}
+                  </span>
+                  <span className="font-semibold text-green-600">
+                    -{formatPrice(paymentReview.order.discount_amount)}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Shipping</span>
+                <span className="font-semibold text-slate-800">
+                  {Number(paymentReview.order.shipping_amount) === 0
+                    ? 'Free'
+                    : formatPrice(paymentReview.order.shipping_amount)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between py-5">
+              <span className="font-bold text-slate-900">
+                Total Payable
+              </span>
+              <span className="text-2xl font-extrabold text-blue-700">
+                {formatPrice(paymentReview.order.total_amount)}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={proceedToPayment}
+              disabled={paymentRedirectLoading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3.5 font-bold text-white transition hover:bg-blue-700 disabled:opacity-50"
+            >
+              <ShieldCheck size={19} />
+              {paymentRedirectLoading
+                ? 'Opening Secure Payment...'
+                : 'Proceed to Secure Payment'}
+              <ArrowRight size={18} />
+            </button>
+
+            <p className="mt-4 text-center text-xs text-slate-500">
+              Please verify your order and total before proceeding.
+              Your payment will be securely processed by Stripe.
+            </p>
+          </div>
         </div>
       )}
     </div>

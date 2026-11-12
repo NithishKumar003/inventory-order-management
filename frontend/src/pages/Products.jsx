@@ -82,7 +82,7 @@ function ProductSkeleton() {
   );
 }
 
-export default function Products() {
+export default function Products({ isAdmin = false }) {
   const [products, setProducts] = useState([]);
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
@@ -104,7 +104,8 @@ export default function Products() {
     setError('');
 
     try {
-      const response = await api.get('/products');
+      const endpoint = isAdmin ? '/products/admin/all' : '/products';
+      const response = await api.get(endpoint);
       setProducts(Array.isArray(response.data) ? response.data : []);
     } catch (err) {
       setError(
@@ -118,7 +119,7 @@ export default function Products() {
 
   useEffect(() => {
     loadProducts();
-  }, []);
+  }, [isAdmin]);
 
   function handleFormChange(event) {
     const { name, value } = event.target;
@@ -767,32 +768,39 @@ export default function Products() {
                 )}
 
                 <div className="mt-5 flex gap-2 border-t border-slate-100 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => openEditForm(product)}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-blue-200 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-50"
-                  >
-                    <Pencil size={16} />
-                    Edit
-                  </button>
+                  {product.is_active ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => openEditForm(product)}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-blue-200 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-50"
+                      >
+                        <Pencil size={16} />
+                        Edit
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(product)}
-                    disabled={
-                      deletingId === product.id || !product.is_active
-                    }
-                    title="Deactivate product"
-                    className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {deletingId === product.id ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={16} />
-                    )}
-                    Deactivate
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(product)}
+                        disabled={deletingId === product.id}
+                        title="Deactivate product"
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {deletingId === product.id ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={16} />
+                        )}
+                        Deactivate
+                      </button>
+                    </>
+                  ) : (
+                    <div className="w-full rounded-xl bg-slate-100 px-4 py-2.5 text-center text-sm font-semibold text-slate-500">
+                      Product is inactive
+                    </div>
+                  )}
                 </div>
+
               </article>
             ))}
           </div>

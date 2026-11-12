@@ -19,6 +19,7 @@ from app.schemas import (
     CouponCreate,
     CouponResponse,
     CouponStatusUpdate,
+    CouponValidateRequest,
 )
 from app.services import (
     calculate_order_totals,
@@ -50,6 +51,42 @@ def health_check():
         "status": "healthy",
         "service": "order-service",
     }
+
+@app.post("/coupons/validate")
+def preview_coupon(
+    coupon_data: CouponValidateRequest,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        subtotal = Decimal(str(coupon_data.subtotal)).quantize(
+            Decimal("0.01")
+        )
+
+        coupon, discount_amount = validate_coupon(
+            db=db,
+            coupon_code=coupon_data.code,
+            subtotal=subtotal,
+        )
+
+        totals = calculate_order_totals(
+            subtotal,
+            discount_amount,
+        )
+
+        return {
+            "valid": True,
+            "code": coupon.code,
+            "discount_type": coupon.discount_type,
+            "discount_value": float(coupon.discount_value),
+            **{
+                key: float(value)
+                for key, value in totals.items()
+            },
+        }
+
+    except HTTPException:
+        raise
 
 @app.post(
     "/coupons",
@@ -775,36 +812,36 @@ def partially_cancel_order_item(
             ),
         ) from exc
 
-        if order.status == "Cancelled":
-            send_notification(
-                user_id=order.user_id,
-                title="Order cancelled",
-                message=(
-                    f"Your order {order.order_number} has been fully cancelled. "
-                    f"Reason: {cancellation_data.reason}"
-                ),
-                notification_type="order_cancelled",
-                reference=f"order {order.order_number} cancellation",
-            )
-        else:
-            send_notification(
-                user_id=order.user_id,
-                title="Order item cancelled",
-                message=(
-                    f"{cancellation_data.quantity} unit(s) of "
-                    f"{order_item.product_name} from order "
-                    f"{order.order_number} have been cancelled. "
-                    f"Reason: {cancellation_data.reason}"
-                ),
-                notification_type="order_item_cancelled",
-                reference=f"order {order.order_number} item cancellation",
-            )
+    if order.status == "Cancelled":
+        send_notification(
+            user_id=order.user_id,
+            title="Order cancelled",
+            message=(
+                f"Your order {order.order_number} has been fully cancelled. "
+                f"Reason: {cancellation_data.reason}"
+            ),
+            notification_type="order_cancelled",
+            reference=f"order {order.order_number} cancellation",
+        )
+    else:
+        send_notification(
+            user_id=order.user_id,
+            title="Order item cancelled",
+            message=(
+                f"{cancellation_data.quantity} unit(s) of "
+                f"{order_item.product_name} from order "
+                f"{order.order_number} have been cancelled. "
+                f"Reason: {cancellation_data.reason}"
+            ),
+            notification_type="order_item_cancelled",
+            reference=f"order {order.order_number} item cancellation",
+        )
 
-        return (
-            db.query(models.Order)
-            .options(joinedload(models.Order.items))
-            .filter(models.Order.id == order.id)
-            .first()
+    return (
+        db.query(models.Order)
+        .options(joinedload(models.Order.items))
+        .filter(models.Order.id == order.id)
+        .first()
         )
 
 @app.post(
@@ -915,20 +952,20 @@ def cancel_order(
             ),
         ) from exc
 
-        send_notification(
-            user_id=order.user_id,
-            title="Order cancelled",
-            message=(
-                f"Your order {order.order_number} has been cancelled. "
-                f"Reason: {cancellation_data.reason}"
-            ),
-            notification_type="order_cancelled",
-            reference=f"order {order.order_number} cancellation",
-        )
+    send_notification(
+        user_id=order.user_id,
+        title="Order cancelled",
+        message=(
+            f"Your order {order.order_number} has been cancelled. "
+            f"Reason: {cancellation_data.reason}"
+        ),
+        notification_type="order_cancelled",
+        reference=f"order {order.order_number} cancellation",
+    )
 
-        return (
-            db.query(models.Order)
-            .options(joinedload(models.Order.items))
-            .filter(models.Order.id == order.id)
-            .first()
-        )
+    return (
+        db.query(models.Order)
+        .options(joinedload(models.Order.items))
+        .filter(models.Order.id == order.id)
+        .first()
+    )

@@ -1,447 +1,388 @@
+
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  ShoppingCart,
-  Search,
+  ArrowRight,
+  ShoppingBag,
   Package,
-  Heart,
-  X,
-  CheckCircle2,
-  AlertCircle,
+  Star,
+  Sparkles,
+  LayoutGrid,
   RefreshCw,
 } from 'lucide-react';
 import api from '../services/api';
 
-function ProductSkeleton() {
+function formatPrice(price) {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0,
+  }).format(price || 0);
+}
+
+function ProductCard({ product, rating, onClick }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="h-52 animate-pulse bg-slate-200" />
-      <div className="space-y-4 p-5">
-        <div className="h-3 w-20 animate-pulse rounded bg-slate-200" />
-        <div className="h-5 w-3/4 animate-pulse rounded bg-slate-200" />
-        <div className="h-4 w-1/2 animate-pulse rounded bg-slate-200" />
-        <div className="h-7 w-24 animate-pulse rounded bg-slate-200" />
-        <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
+    <button
+      type="button"
+      onClick={onClick}
+      className="group overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition hover:-translate-y-1 hover:shadow-lg"
+    >
+      <div className="relative flex h-48 items-center justify-center overflow-hidden bg-slate-100 p-4">
+        <Package size={42} className="absolute text-slate-300" />
+
+        {product.image_url && (
+          <img
+            src={product.image_url}
+            alt={product.name}
+            loading="lazy"
+            onError={(event) => {
+              event.currentTarget.style.display = 'none';
+            }}
+            className="relative z-10 h-full w-full object-contain transition duration-300 group-hover:scale-105"
+          />
+        )}
       </div>
+
+      <div className="p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-blue-600">
+          {product.category || 'General'}
+        </p>
+
+        <h3 className="truncate font-bold text-slate-800">
+          {product.name}
+        </h3>
+
+        <p className="mt-2 text-lg font-extrabold text-slate-900">
+          {formatPrice(product.price)}
+        </p>
+
+        {rating && rating.total_reviews > 0 && (
+          <div className="mt-2 flex items-center gap-1 text-sm">
+            <Star size={15} className="fill-yellow-400 text-yellow-400" />
+            <span className="font-semibold text-slate-700">
+              {Number(rating.average_rating).toFixed(1)}
+            </span>
+            <span className="text-slate-400">
+              ({rating.total_reviews} reviews)
+            </span>
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-sm font-semibold text-blue-600">
+          View Details
+          <ArrowRight size={16} className="transition group-hover:translate-x-1" />
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function SectionHeading({ eyebrow, title, description, onViewAll }) {
+  return (
+    <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+      <div>
+        <p className="mb-1 text-xs font-bold uppercase tracking-widest text-blue-600">
+          {eyebrow}
+        </p>
+        <h2 className="text-2xl font-extrabold text-slate-900 sm:text-3xl">
+          {title}
+        </h2>
+        <p className="mt-2 text-sm text-slate-500">{description}</p>
+      </div>
+
+      {onViewAll && (
+        <button
+          type="button"
+          onClick={onViewAll}
+          className="flex items-center gap-2 text-sm font-bold text-blue-600 hover:text-blue-800"
+        >
+          View All <ArrowRight size={16} />
+        </button>
+      )}
     </div>
   );
 }
 
 export default function Store() {
+  const navigate = useNavigate();
+
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [ratings, setRatings] = useState({});
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [wishlistIds, setWishlistIds] = useState([]);
-  const [cartLoading, setCartLoading] = useState([]);
-  const [wishlistLoading, setWishlistLoading] = useState([]);
-  const [failedImages, setFailedImages] = useState([]);
-
-  async function fetchProducts() {
-    try {
-      setLoading(true);
-      setError('');
-
-      const response = await api.get('/products');
-      setProducts(Array.isArray(response.data) ? response.data : []);
-    } catch (err) {
-      setError(
-        err.response?.data?.detail || 'Unable to load products.'
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function fetchWishlist() {
-    try {
-      const response = await api.get('/wishlist');
-
-      const ids = (response.data || []).map(
-        (item) => item.product_id
-      );
-
-      setWishlistIds(ids);
-    } catch (err) {
-      console.error('Unable to load wishlist:', err);
-    }
-  }
 
   useEffect(() => {
-    fetchProducts();
-    fetchWishlist();
-  }, []);
+    let cancelled = false;
 
-  function showMessage(text) {
-    setMessage(text);
-    setError('');
-  }
+    async function loadHomepage() {
+      try {
+        setLoading(true);
+        setError('');
 
-  async function addToCart(productId) {
-    if (cartLoading.includes(productId)) return;
+        const [productResponse, categoryResponse] = await Promise.all([
+          api.get('/products/paginated', {
+            params: { skip: 0, limit: 100 },
+          }),
+          api.get('/products/categories'),
+        ]);
 
-    try {
-      setCartLoading((previous) => [...previous, productId]);
-      setMessage('');
-      setError('');
+        if (cancelled) return;
 
-      await api.post('/cart/items', {
-        product_id: productId,
-        quantity: 1,
-      });
+        const productList = productResponse.data.items || [];
+        setProducts(productList);
 
-      showMessage('Product added to your cart successfully.');
-    } catch (err) {
-      setError(
-        err.response?.data?.detail || 'Unable to add product to cart.'
-      );
-    } finally {
-      setCartLoading((previous) =>
-        previous.filter((id) => id !== productId)
-      );
-    }
-  }
+        setCategories(categoryResponse.data.value || []);
 
-  async function toggleWishlist(productId) {
-    if (wishlistLoading.includes(productId)) return;
+        const ratingResults = await Promise.all(
+          productList.map(async (product) => {
+            try {
+              const response = await api.get(
+                `/reviews/products/${product.id}/rating-summary`
+              );
 
-    try {
-      setWishlistLoading((previous) => [...previous, productId]);
-      setMessage('');
-      setError('');
-
-      if (wishlistIds.includes(productId)) {
-        await api.delete(`/wishlist/items/${productId}`);
-
-        setWishlistIds((previous) =>
-          previous.filter((id) => id !== productId)
+              return [product.id, response.data];
+            } catch {
+              return [product.id, null];
+            }
+          })
         );
 
-        showMessage('Product removed from your wishlist.');
-      } else {
-        await api.post('/wishlist/items', {
-          product_id: productId,
-        });
-
-        setWishlistIds((previous) => [...previous, productId]);
-
-        showMessage('Product added to your wishlist.');
+        if (!cancelled) {
+          setRatings(Object.fromEntries(ratingResults));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err.response?.data?.detail ||
+              'Unable to load the homepage. Please try again.'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-    } catch (err) {
-      setError(
-        err.response?.data?.detail || 'Unable to update wishlist.'
-      );
-    } finally {
-      setWishlistLoading((previous) =>
-        previous.filter((id) => id !== productId)
-      );
     }
-  }
 
-  const searchText = search.trim().toLowerCase();
+    loadHomepage();
 
-  const filteredProducts = products.filter((product) => {
-    const name = String(product.name || '').toLowerCase();
-    const category = String(product.category || '').toLowerCase();
-    const sku = String(product.sku || '').toLowerCase();
-    const brand = String(product.brand || '').toLowerCase();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-    return (
-      name.includes(searchText) ||
-      category.includes(searchText) ||
-      sku.includes(searchText) ||
-      brand.includes(searchText)
-    );
-  });
+  const newArrivals = [...products]
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() -
+        new Date(a.created_at).getTime()
+    )
+    .slice(0, 4);
+
+  const topRated = products
+    .filter((product) => {
+      const rating = ratings[product.id];
+      return rating && Number(rating.total_reviews) > 0;
+    })
+    .sort((a, b) => {
+      const ratingA = ratings[a.id];
+      const ratingB = ratings[b.id];
+
+      return (
+        Number(ratingB.average_rating) -
+          Number(ratingA.average_rating) ||
+        Number(ratingB.total_reviews) -
+          Number(ratingA.total_reviews)
+      );
+    })
+    .slice(0, 4);
 
   return (
-    <div className="space-y-7">
-      {/* Store Welcome Section */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-600 px-6 py-10 text-white shadow-lg shadow-blue-200 sm:px-10">
+    <div className="space-y-12 pb-8">
+      {/* Hero Banner */}
+      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700 px-6 py-14 text-white shadow-xl sm:px-12 sm:py-20">
+        <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10" />
+        <div className="absolute -bottom-28 right-40 h-64 w-64 rounded-full bg-white/10" />
+
         <div className="relative z-10 max-w-2xl">
-          <span className="inline-flex items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider">
-            StockFlow Marketplace
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-wider">
+            <Sparkles size={15} />
+            Welcome to StockFlow
           </span>
 
-          <h1 className="mt-5 text-3xl font-extrabold tracking-tight sm:text-4xl">
+          <h1 className="mt-6 text-4xl font-extrabold leading-tight sm:text-5xl lg:text-6xl">
             Discover products you'll love.
           </h1>
 
-          <p className="mt-3 max-w-lg text-sm leading-6 text-blue-100 sm:text-base">
-            Explore our collection, save your favourites, and enjoy a
-            simple shopping experience.
+          <p className="mt-5 max-w-xl text-sm leading-7 text-blue-100 sm:text-base">
+            Explore our collection, discover new arrivals and find the
+            products that make everyday life better.
           </p>
 
-          <div className="mt-6 flex flex-wrap items-center gap-3 text-sm">
-            <span className="rounded-xl bg-white/15 px-4 py-2 font-semibold">
-              {products.length} Products
-            </span>
-            <span className="rounded-xl bg-white/15 px-4 py-2">
-              Easy Shopping
-            </span>
+          <div className="mt-8 flex flex-wrap gap-3">
+            <button
+              onClick={() => navigate('/shop')}
+              className="flex items-center gap-2 rounded-xl bg-white px-6 py-3 font-bold text-blue-700 shadow-lg transition hover:bg-blue-50"
+            >
+              <ShoppingBag size={18} />
+              Shop Now
+              <ArrowRight size={17} />
+            </button>
+
+            <button
+              onClick={() => navigate('/categories')}
+              className="rounded-xl border border-white/40 px-6 py-3 font-bold text-white transition hover:bg-white/10"
+            >
+              Explore Categories
+            </button>
           </div>
         </div>
-
-        <div className="pointer-events-none absolute -right-12 -top-16 h-72 w-72 rounded-full border-[35px] border-white/10" />
-        <div className="pointer-events-none absolute -bottom-32 right-32 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
       </section>
 
-      {/* Notifications */}
-      {message && (
-        <div
-          role="status"
-          className="flex items-center gap-3 rounded-xl border border-green-200 bg-green-50 p-4 text-sm font-medium text-green-800"
-        >
-          <CheckCircle2 size={20} className="shrink-0" />
-          <span className="flex-1">{message}</span>
-          <button
-            type="button"
-            onClick={() => setMessage('')}
-            aria-label="Dismiss notification"
-          >
-            <X size={18} />
-          </button>
+      {/* Loading and Error */}
+      {loading && (
+        <div className="flex items-center justify-center gap-3 py-12 text-slate-500">
+          <RefreshCw size={20} className="animate-spin" />
+          Loading your shopping experience...
         </div>
       )}
 
       {error && (
-        <div
-          role="alert"
-          className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
-        >
-          <AlertCircle size={20} className="shrink-0" />
-          <span className="flex-1">{error}</span>
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-700">
+          {error}
           <button
-            type="button"
-            onClick={() => setError('')}
-            aria-label="Dismiss error"
+            onClick={() => window.location.reload()}
+            className="ml-3 font-bold underline"
           >
-            <X size={18} />
+            Retry
           </button>
         </div>
       )}
 
-      {/* Search and Product Count */}
-      <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">
-            Explore Products
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Find something you need today.
-          </p>
-        </div>
+      {!loading && !error && (
+        <>
+          {/* Categories */}
+          <section>
+            <SectionHeading
+              eyebrow="Browse Collections"
+              title="Shop by Category"
+              description="Find exactly what you're looking for."
+              onViewAll={() => navigate('/categories')}
+            />
 
-        <div className="flex w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-100 sm:max-w-sm">
-          <Search size={19} className="shrink-0 text-slate-400" />
-
-          <input
-            type="text"
-            placeholder="Search name, brand, category or SKU..."
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
-          />
-
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch('')}
-              aria-label="Clear search"
-              className="text-slate-400 hover:text-slate-700"
-            >
-              <X size={18} />
-            </button>
-          )}
-        </div>
-      </section>
-
-      {/* Product Results */}
-      <section>
-        {loading ? (
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, index) => (
-              <ProductSkeleton key={index} />
-            ))}
-          </div>
-        ) : error && products.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-12 text-center shadow-sm">
-            <AlertCircle size={42} className="mx-auto text-red-400" />
-
-            <h3 className="mt-4 text-lg font-bold text-slate-800">
-              Products could not be loaded
-            </h3>
-
-            <p className="mt-2 text-sm text-slate-500">
-              Please check your connection and try again.
-            </p>
-
-            <button
-              type="button"
-              onClick={fetchProducts}
-              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
-            >
-              <RefreshCw size={17} />
-              Try Again
-            </button>
-          </div>
-        ) : filteredProducts.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-100">
-              <Package size={34} className="text-slate-400" />
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {categories.map((category, index) => (
+                <button
+                  key={category}
+                  onClick={() =>
+                    navigate(
+                      `/shop?category=${encodeURIComponent(category)}`
+                    )
+                  }
+                  className="group flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-blue-300 hover:bg-blue-50"
+                >
+                  <div>
+                    <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+                      <LayoutGrid size={20} />
+                    </div>
+                    <h3 className="font-bold text-slate-800">
+                      {category}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Explore collection
+                    </p>
+                  </div>
+                  <ArrowRight
+                    size={18}
+                    className="text-slate-400 transition group-hover:translate-x-1 group-hover:text-blue-600"
+                  />
+                </button>
+              ))}
             </div>
+          </section>
 
-            <h3 className="mt-5 text-lg font-bold text-slate-800">
-              {search ? 'No products found' : 'No products available'}
-            </h3>
+          {/* New Arrivals */}
+          <section>
+            <SectionHeading
+              eyebrow="Fresh Finds"
+              title="New Arrivals"
+              description="Check out the latest products added to our store."
+              onViewAll={() => navigate('/shop')}
+            />
 
-            <p className="mt-2 text-sm text-slate-500">
-              {search
-                ? 'Try a different product name, brand, category or SKU.'
-                : 'Please check back later for available products.'}
-            </p>
-
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch('')}
-                className="mt-5 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
-              >
-                Clear Search
-              </button>
+            {newArrivals.length > 0 ? (
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                {newArrivals.map((product) => (
+                  <ProductCard
+                    key={product.id}
+                    product={product}
+                    rating={ratings[product.id]}
+                    onClick={() => navigate(`/products/${product.id}`)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-xl bg-white p-6 text-center text-slate-500">
+                No products available yet.
+              </p>
             )}
-          </div>
-        ) : (
-          <>
-            <div className="mb-4 flex items-center justify-between">
-              <p className="text-sm text-slate-500">
-                Showing{' '}
-                <span className="font-semibold text-slate-800">
-                  {filteredProducts.length}
-                </span>{' '}
-                products
+          </section>
+
+          {/* Top Rated */}
+          <section>
+            <SectionHeading
+              eyebrow="Customer Favourites"
+              title="Top Rated Products"
+              description="Products ranked using actual customer reviews."
+              onViewAll={() => navigate('/shop')}
+            />
+
+            {topRated.length > 0 ? (
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                {topRated.map((product) => (
+                  <ProductCard
+                    key={product.id}
+                    product={product}
+                    rating={ratings[product.id]}
+                    onClick={() => navigate(`/products/${product.id}`)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
+                <Star size={30} className="mx-auto mb-3 text-yellow-400" />
+                <h3 className="font-bold text-slate-800">
+                  Reviews are coming soon
+                </h3>
+                <p className="mt-2 text-sm text-slate-500">
+                  Customer-rated products will appear here once reviews are available.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* Bottom CTA */}
+          <section className="flex flex-col items-center justify-between gap-5 rounded-3xl bg-slate-900 px-6 py-10 text-center text-white sm:flex-row sm:px-10 sm:text-left">
+            <div>
+              <h2 className="text-2xl font-extrabold">
+                Ready to explore more?
+              </h2>
+              <p className="mt-2 text-sm text-slate-300">
+                Browse our complete collection of products.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {filteredProducts.map((product) => {
-                const isWishlisted = wishlistIds.includes(product.id);
-                const isCartLoading = cartLoading.includes(product.id);
-                const isWishlistLoading = wishlistLoading.includes(product.id);
-                const imageFailed = failedImages.includes(product.id);
-
-                return (
-                  <article
-                    key={product.id}
-                    className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-blue-200 hover:shadow-xl hover:shadow-slate-200/70"
-                  >
-                    {/* Product Image */}
-                    <div className="relative flex h-52 items-center justify-center overflow-hidden bg-slate-50">
-                      {product.image_url && !imageFailed ? (
-                        <img
-                          src={product.image_url}
-                          alt={product.name}
-                          loading="lazy"
-                          onError={() =>
-                            setFailedImages((previous) =>
-                              previous.includes(product.id)
-                                ? previous
-                                : [...previous, product.id]
-                            )
-                          }
-                          className="h-full w-full object-contain p-5 transition-transform duration-500 group-hover:scale-110"
-                        />
-                      ) : (
-                        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-white shadow-sm">
-                          <Package size={42} className="text-slate-300" />
-                        </div>
-                      )}
-
-                      <span className="absolute left-3 top-3 rounded-lg bg-white/90 px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
-                        {product.category || 'General'}
-                      </span>
-
-                      <button
-                        type="button"
-                        onClick={() => toggleWishlist(product.id)}
-                        disabled={isWishlistLoading}
-                        title={
-                          isWishlisted
-                            ? 'Remove from wishlist'
-                            : 'Add to wishlist'
-                        }
-                        aria-label={
-                          isWishlisted
-                            ? 'Remove from wishlist'
-                            : 'Add to wishlist'
-                        }
-                        className={`absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-md transition hover:scale-110 disabled:opacity-60 ${
-                          isWishlisted
-                            ? 'text-red-500'
-                            : 'text-slate-500 hover:text-red-500'
-                        }`}
-                      >
-                        <Heart
-                          size={20}
-                          className={isWishlisted ? 'fill-red-500' : ''}
-                        />
-                      </button>
-                    </div>
-
-                    {/* Product Information */}
-                    <div className="p-5">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-blue-600">
-                        SKU: {product.sku || 'N/A'}
-                      </p>
-
-                      <h3 className="mt-2 line-clamp-2 min-h-12 text-base font-bold text-slate-900 transition-colors group-hover:text-blue-700">
-                        {product.name}
-                      </h3>
-
-                      {product.brand && (
-                        <p className="mt-1 truncate text-sm text-slate-500">
-                          {product.brand}
-                        </p>
-                      )}
-
-                      <div className="mt-4 flex items-center justify-between">
-                        <div>
-                          <p className="text-xs text-slate-400">Price</p>
-                          <p className="text-xl font-extrabold text-slate-900">
-                            ₹{Number(product.price).toLocaleString('en-IN', {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
-                          </p>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => addToCart(product.id)}
-                        disabled={isCartLoading}
-                        className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-blue-100 transition hover:bg-blue-700 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isCartLoading ? (
-                          <>
-                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                            Adding...
-                          </>
-                        ) : (
-                          <>
-                            <ShoppingCart size={18} />
-                            Add to Cart
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </section>
+            <button
+              onClick={() => navigate('/shop')}
+              className="flex shrink-0 items-center gap-2 rounded-xl bg-blue-600 px-6 py-3 font-bold transition hover:bg-blue-500"
+            >
+              View All Products
+              <ArrowRight size={18} />
+            </button>
+          </section>
+        </>
+      )}
     </div>
   );
 }

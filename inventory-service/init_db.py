@@ -1,5 +1,11 @@
 from app.database import Base, engine
-from app.models import Inventory, StockMovement
+from app.models import (
+    AppSetting,
+    Inventory,
+    StockMovement,
+    StockRelease,
+    StockReservation,
+)
 
 Base.metadata.create_all(bind=engine)
 

@@ -62,6 +62,7 @@ services:
       - ./inventory-service/.env
     environment:
       AUTH_SERVICE_URL: http://auth-service:8001
+      PRODUCT_SERVICE_URL: http://product-service:8002
     ports:
       - "8003:8003"
     volumes:
@@ -248,6 +249,21 @@ services:
       - return-service
 
   # -------------------------
+  # REDIS CACHE & RATE LIMITER
+  # -------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
   # API GATEWAY
   # -------------------------
   api-gateway:
@@ -267,19 +283,32 @@ services:
       REVIEW_SERVICE_URL: http://review-service:8008
       RETURN_SERVICE_URL: http://return-service:8009
       ANALYTICS_SERVICE_URL: http://analytics-service:8010
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     depends_on:
-      - auth-service
-      - product-service
-      - inventory-service
-      - cart-service
-      - order-service
-      - payment-service
-      - notification-service
-      - review-service
-      - return-service
-      - analytics-service
+      auth-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      cart-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+      review-service:
+        condition: service_started
+      return-service:
+        condition: service_started
+      analytics-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
   # -------------------------
   # REACT FRONTEND
@@ -298,3 +327,4 @@ services:
 
 volumes:
   rabbitmq_data:
+  redis_data:

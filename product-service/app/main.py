@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import Product
 from app.auth import require_admin
-from app.schemas import ProductCreate, ProductResponse, ProductUpdate
+from app.schemas import ProductCreate, ProductResponse, ProductUpdate, PaginatedProductsResponse
 
 
 INVENTORY_SERVICE_URL = os.getenv(
@@ -133,6 +133,8 @@ def list_products(
         query = query.filter(
             Product.name.ilike(search_text)
             | Product.sku.ilike(search_text)
+            | Product.category.ilike(search_text)
+            | Product.brand.ilike(search_text)
         )
 
     if category:
@@ -172,6 +174,120 @@ def list_products(
 
     return matching_products[skip : skip + limit]
 
+@app.get(
+    "/products/paginated",
+    response_model=PaginatedProductsResponse,
+)
+def list_products_paginated(
+    search: str | None = Query(default=None, min_length=1),
+    category: str | None = Query(default=None, min_length=1),
+    brand: str | None = Query(default=None, min_length=1),
+    min_price: float | None = Query(default=None, ge=0),
+    max_price: float | None = Query(default=None, ge=0),
+    in_stock: bool | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=8, ge=1, le=100),
+    sort_by: str = Query(default="id"),
+    sort_order: str = Query(default="asc"),
+    db: Session = Depends(get_db),
+):
+    if min_price is not None and max_price is not None:
+        if min_price > max_price:
+            raise HTTPException(
+                status_code=400,
+                detail="Minimum price cannot exceed maximum price.",
+            )
+
+    allowed_sort_fields = {
+        "id": Product.id,
+        "name": Product.name,
+        "price": Product.price,
+        "category": Product.category,
+        "brand": Product.brand,
+    }
+
+    if sort_by not in allowed_sort_fields:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid sort field.",
+        )
+
+    if sort_order not in ("asc", "desc"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid sort order.",
+        )
+
+    query = db.query(Product).filter(Product.is_active.is_(True))
+
+    if search:
+        search_text = f"%{search.strip()}%"
+        query = query.filter(
+            Product.name.ilike(search_text)
+            | Product.sku.ilike(search_text)
+            | Product.category.ilike(search_text)
+            | Product.brand.ilike(search_text)
+        )
+
+    if category:
+        query = query.filter(Product.category.ilike(category.strip()))
+
+    if brand:
+        query = query.filter(Product.brand.ilike(brand.strip()))
+
+    if min_price is not None:
+        query = query.filter(Product.price >= min_price)
+
+    if max_price is not None:
+        query = query.filter(Product.price <= max_price)
+
+    sort_column = allowed_sort_fields[sort_by]
+
+    if sort_order == "desc":
+        query = query.order_by(sort_column.desc())
+    else:
+        query = query.order_by(sort_column.asc())
+
+    if in_stock is None:
+        total = query.count()
+        items = query.offset(skip).limit(limit).all()
+    else:
+        matching_products = []
+
+        for product in query.all():
+            quantity = get_stock_quantity(product.id)
+
+            if in_stock and quantity > 0:
+                matching_products.append(product)
+            elif not in_stock and quantity <= 0:
+                matching_products.append(product)
+
+        total = len(matching_products)
+        items = matching_products[skip:skip + limit]
+
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+@app.get("/products/categories")
+def list_product_categories(
+    db: Session = Depends(get_db),
+):
+    categories = (
+        db.query(Product.category)
+        .filter(
+            Product.is_active.is_(True),
+            Product.category.isnot(None),
+        )
+        .distinct()
+        .order_by(Product.category.asc())
+        .all()
+    )
+
+    return [category[0] for category in categories]
 
 @app.get(
     "/products/{product_id}",

@@ -41,7 +41,7 @@ class OrderItemResponse(BaseModel):
     status: str
     cancelled_quantity: int
     cancellation_reason: str | None
-    
+
 class OrderStatusHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -85,6 +85,11 @@ class PartialItemCancellationRequest(BaseModel):
     cancellation_key: str = Field(min_length=8, max_length=150)
     quantity: int = Field(gt=0)
     reason: str = Field(min_length=3, max_length=300)
+
+class CouponValidateRequest(BaseModel):
+    code: str = Field(min_length=3, max_length=40)
+    subtotal: float = Field(gt=0)
+
 class CouponCreate(BaseModel):
     code: str = Field(min_length=3, max_length=40)
     discount_type: Literal["PERCENT", "FIXED"]

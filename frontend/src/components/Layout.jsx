@@ -77,13 +77,19 @@ export default function Layout({ onLogout }) {
         </nav>
 
         <div className="border-t border-slate-800 p-4">
-          <button
-            type="button"
-            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm text-slate-400 transition hover:bg-slate-800 hover:text-white"
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              `flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm transition ${
+                isActive
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`
+            }
           >
             <Settings size={19} />
             Settings
-          </button>
+          </NavLink>
 
           <p className="mt-4 px-4 text-xs text-slate-600">
             StockFlow Admin Workspace

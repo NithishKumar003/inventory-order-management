@@ -7,13 +7,16 @@ import App from './App';
 import Register from './pages/Register';
 import Login from './pages/Login';
 import Products from './pages/Products';
-import Inventory from './pages/Inventory';
+
 import Orders from './pages/Orders';
 import Customers from './pages/Customers';
 import Cart from './pages/Cart';
 import Store from './pages/Store';
+import Shop from './pages/Shop';
 import Wishlist from './pages/Wishlist';
+import Inventory from './pages/Inventory';
 import OrderDetails from './pages/OrderDetails';
+import AdminOrderDetails from './pages/AdminOrderDetails';
 import Deliveries from './pages/Deliveries';
 import Returns from './pages/Returns';
 import Reports from './pages/Reports';
@@ -21,8 +24,11 @@ import PaymentSuccess from './pages/PaymentSuccess';
 import PaymentCancel from './pages/PaymentCancel';
 import Notifications from './pages/Notifications';
 import Reviews from './pages/Reviews';
+import ProductDetails from './pages/ProductDetails';
 import Layout from './components/Layout';
 import CustomerLayout from './components/CustomerLayout';
+import AdminSettings from './pages/AdminSettings';
+import Categories from './pages/Categories';
 
 export default function AppRouter() {
   const [token, setToken] = useState(
@@ -110,21 +116,26 @@ export default function AppRouter() {
       {token && user?.role === 'admin' && (
         <Route element={<Layout onLogout={handleLogout} />}>
           <Route path="/" element={<App />} />
-          <Route path="/products" element={<Products />} />
+          <Route path="/products" element={<Products isAdmin />} />
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/orders" element={<Orders isAdmin />} />
+          <Route path="/admin/orders/:orderId" element={<AdminOrderDetails />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/deliveries" element={<Deliveries />} />
           <Route path="/returns" element={<Returns />} />
           <Route path="/reviews" element={<Reviews />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
+          <Route path="/settings" element={<AdminSettings />} />
         </Route>
       )}
 
       {token && user?.role === 'customer' && (
         <Route element={<CustomerLayout onLogout={handleLogout} />}>
           <Route path="/store" element={<Store />} />
+          <Route path="/shop" element={<Shop />} />
+          <Route path="/categories" element={<Categories />} />
+          <Route path="/products/:productId" element={<ProductDetails />} />
           <Route path="/cart" element={<Cart />} />
           <Route path="/wishlist" element={<Wishlist />} />
           <Route path="/orders" element={<Orders />} />

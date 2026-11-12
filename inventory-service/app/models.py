@@ -80,3 +80,9 @@ class StockRelease(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(String(200), nullable=False)

@@ -1,7 +1,10 @@
 import os
+import json
 from contextlib import asynccontextmanager
 
 import httpx
+import redis.asyncio as redis
+from redis.exceptions import RedisError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,11 +63,63 @@ ANALYTICS_SERVICE_URL = os.getenv(
     "http://127.0.0.1:8010",
 )
 
+REDIS_RATE_LIMIT = int(
+    os.getenv("REDIS_RATE_LIMIT", "100")
+)
+
+REDIS_RATE_LIMIT_WINDOW = int(
+    os.getenv("REDIS_RATE_LIMIT_WINDOW", "60")
+)
+
+PRODUCT_CACHE_TTL = int(
+    os.getenv("PRODUCT_CACHE_TTL", "30")
+)
+
+RATE_LIMIT_SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+
+return current
+"""
+
+def get_product_cache_key(request: Request) -> str:
+    query_string = request.url.query
+
+    cache_key = f"product_cache:{request.url.path}"
+
+    if query_string:
+        cache_key += f"?{query_string}"
+
+    return cache_key
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=30.0)
-    yield
-    await app.state.http_client.aclose()
+
+    redis_url = os.getenv(
+        "REDIS_URL",
+        "redis://localhost:6379/0",
+    )
+
+    app.state.redis = redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=3,
+        socket_timeout=3,
+    )
+
+    try:
+        await app.state.redis.ping()
+        print("API Gateway connected to Redis successfully.")
+
+        yield
+
+    finally:
+        await app.state.redis.aclose()
+        await app.state.http_client.aclose()
 
 app = FastAPI(
     title="Inventory Management - API Gateway",
@@ -83,6 +138,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    # Do not rate-limit health checks.
+    if request.url.path.endswith("/health"):
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    redis_key = f"rate_limit:{client_ip}"
+
+    try:
+        current_count = await request.app.state.redis.eval(
+            RATE_LIMIT_SCRIPT,
+            1,
+            redis_key,
+            REDIS_RATE_LIMIT_WINDOW,
+        )
+
+        if current_count > REDIS_RATE_LIMIT:
+            return Response(
+                content='{"detail":"Rate limit exceeded. Try again later."}',
+                status_code=429,
+                media_type="application/json",
+                headers={
+                    "Retry-After": str(REDIS_RATE_LIMIT_WINDOW),
+                    "X-RateLimit-Limit": str(REDIS_RATE_LIMIT),
+                    "X-RateLimit-Remaining": "0",
+                },
+            )
+
+        response = await call_next(request)
+
+        response.headers["X-RateLimit-Limit"] = str(REDIS_RATE_LIMIT)
+        response.headers["X-RateLimit-Remaining"] = str(
+            max(0, REDIS_RATE_LIMIT - current_count)
+        )
+
+        return response
+
+    except RedisError:
+        return Response(
+            content='{"detail":"Rate limiting service is unavailable."}',
+            status_code=503,
+            media_type="application/json",
+        )
 
 @app.get("/health")
 async def health_check():
@@ -132,6 +233,7 @@ async def forward_auth_request(request: Request, path: str):
         if key.lower() not in excluded_headers
     }
 
+
     return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
@@ -178,6 +280,32 @@ async def product_health(request: Request):
 )
 async def product_gateway(request: Request, path: str = ""):
     client = request.app.state.http_client
+
+    cache_allowed = (
+        request.method == "GET"
+        and "authorization" not in request.headers
+        and path != "admin/all"
+        and not path.startswith("admin/")
+    )
+
+    cache_key = get_product_cache_key(request)
+
+    if cache_allowed:
+        try:
+            cached_data = await request.app.state.redis.get(cache_key)
+
+            if cached_data:
+                cached_response = json.loads(cached_data)
+
+                return Response(
+                    content=cached_response["content"],
+                    status_code=cached_response["status_code"],
+                    headers=cached_response["headers"],
+                )
+
+        except (RedisError, json.JSONDecodeError):
+            pass
+
     target_url = f"{PRODUCT_SERVICE_URL.rstrip('/')}/products"
 
     if path:
@@ -220,6 +348,37 @@ async def product_gateway(request: Request, path: str = ""):
         for key, value in upstream_response.headers.items()
         if key.lower() not in excluded_headers
     }
+
+    # Invalidate product cache after successful product mutations.
+    if (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and 200 <= upstream_response.status_code < 300
+    ):
+        try:
+            async for key in request.app.state.redis.scan_iter(
+                match="product_cache:*"
+            ):
+                await request.app.state.redis.delete(key)
+
+        except RedisError:
+            pass
+
+    if cache_allowed and upstream_response.status_code == 200:
+        try:
+            cache_data = {
+                "content": upstream_response.text,
+                "status_code": upstream_response.status_code,
+                "headers": response_headers,
+            }
+
+            await request.app.state.redis.setex(
+                cache_key,
+                PRODUCT_CACHE_TTL,
+                json.dumps(cache_data),
+            )
+
+        except RedisError:
+            pass
 
     return Response(
         content=upstream_response.content,
@@ -457,6 +616,20 @@ async def order_gateway(request: Request, path: str = ""):
     return await forward_order_request(
         request,
         "orders" if not path else f"orders/{path}",
+    )
+
+@app.api_route(
+    "/coupons",
+    methods=["GET", "POST"],
+)
+@app.api_route(
+    "/coupons/{path:path}",
+    methods=["GET", "POST", "PATCH"],
+)
+async def coupon_gateway(request: Request, path: str = ""):
+    return await forward_order_request(
+        request,
+        "coupons" if not path else f"coupons/{path}",
     )
 
 @app.get("/payments/health")
@@ -759,7 +932,7 @@ async def return_gateway(request: Request, path: str = ""):
         request,
         "returns" if not path else f"returns/{path}",
     )
-    
+
 # ==============================
 # ANALYTICS SERVICE
 # ==============================

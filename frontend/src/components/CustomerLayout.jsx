@@ -8,10 +8,13 @@ import {
   Boxes,
   ArrowRight,
   Bell,
+  LayoutGrid,
 } from 'lucide-react';
 
 const customerMenuItems = [
   { name: 'Store', path: '/store', icon: Store },
+  { name: 'Shop', path: '/shop', icon: ShoppingCart },
+  { name: 'Categories', path: '/categories', icon: LayoutGrid },
   { name: 'My Cart', path: '/cart', icon: ShoppingCart },
   { name: 'Wishlist', path: '/wishlist', icon: Heart },
   { name: 'My Orders', path: '/orders', icon: Package },

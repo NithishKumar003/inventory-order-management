@@ -4,9 +4,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import httpx
 
-from app.auth import require_inventory_manager, verify_order_service
+from app.auth import get_current_user, require_inventory_manager, verify_order_service
 from app.database import SessionLocal
-from app.models import Inventory, StockMovement, StockRelease, StockReservation
+from app.models import AppSetting, Inventory, StockMovement, StockRelease, StockReservation
 from app.schemas import (
     InventoryResponse,
     InventoryCreate,
@@ -17,9 +17,16 @@ from app.schemas import (
     StockReservationResponse,
     StockReservationRelease,
     StockReservationPartialRelease,
+    InventorySettingsUpdate,
+    InventorySettingsResponse,
 )
 
-PRODUCT_SERVICE_URL = "http://127.0.0.1:8002"
+import os
+
+PRODUCT_SERVICE_URL = os.getenv(
+    "PRODUCT_SERVICE_URL",
+    "http://product-service:8002"
+)
 
 app = FastAPI(
     title="Inventory Management - Inventory Service",
@@ -34,6 +41,76 @@ def get_db():
         yield db
     finally:
         db.close()
+        
+
+# --------------------------------------------------
+# INVENTORY SETTINGS
+# --------------------------------------------------
+
+DEFAULT_LOW_STOCK_THRESHOLD = 10
+
+
+def get_low_stock_threshold(db: Session) -> int:
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == "low_stock_threshold")
+        .first()
+    )
+
+    if setting is None:
+        return DEFAULT_LOW_STOCK_THRESHOLD
+
+    return int(setting.value)
+
+
+@app.get(
+    "/inventory/settings",
+    response_model=InventorySettingsResponse,
+)
+def get_inventory_settings(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return {
+        "low_stock_threshold": get_low_stock_threshold(db)
+    }
+
+
+@app.put(
+    "/inventory/settings",
+    response_model=InventorySettingsResponse,
+)
+def update_inventory_settings(
+    settings: InventorySettingsUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required.",
+        )
+
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == "low_stock_threshold")
+        .first()
+    )
+
+    if setting is None:
+        setting = AppSetting(
+            key="low_stock_threshold",
+            value=str(settings.low_stock_threshold),
+        )
+        db.add(setting)
+    else:
+        setting.value = str(settings.low_stock_threshold)
+
+    db.commit()
+
+    return {
+        "low_stock_threshold": settings.low_stock_threshold
+    }
 
 
 # --------------------------------------------------
@@ -510,9 +587,12 @@ def list_stock_movements(
     dependencies=[Depends(require_inventory_manager)],
 )
 def get_low_stock(
-    threshold: int = 10,
+    threshold: int | None = None,
     db: Session = Depends(get_db),
 ):
+    if threshold is None:
+        threshold = get_low_stock_threshold(db)
+
     if threshold < 0:
         raise HTTPException(
             status_code=400,
