@@ -102,7 +102,7 @@ def test_gateway_health(gateway):
         ("/auth/health", "http://auth.test/health"),
         ("/products", "http://product.test/products"),
         ("/products/12", "http://product.test/products/12"),
-        ("/inventory", "http://inventory.test/inventory/"),
+        ("/inventory", "http://inventory.test/inventory"),
         ("/inventory/12", "http://inventory.test/inventory/12"),
         ("/cart", "http://cart.test/cart"),
         ("/cart/health", "http://cart.test/health"),
